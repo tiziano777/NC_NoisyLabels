@@ -42,7 +42,7 @@ transform = transforms.Compose(
 
 
 # Definizione del tasso di rumore
-noise_rate = 0.30
+noise_rate = 0.10
 
 # Class to store data with only fake labels
 class NoiseDataset(Dataset):
@@ -179,11 +179,10 @@ cifar10_testset = datasets.CIFAR10(root='./data', train=False, download=True, tr
 
 # Creazione degli oggetti NoisyLabelsDataset
 cifar10_noisy_trainset = NoisyLabelsDatasetManager(cifar10_trainset, noise_rate=noise_rate)
-cifar10_noisy_testset = NoisyLabelsDatasetManager(cifar10_testset, noise_rate=noise_rate)
 
 # Configurazione del DataLoader
-cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=128, shuffle=True, num_workers=2, drop_last=True)
-cifar10_testloader = DataLoader(cifar10_noisy_testset, batch_size=128, num_workers=2, drop_last=True)
+cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=256, shuffle=True, num_workers=2, drop_last=True)
+cifar10_testloader = DataLoader(cifar10_testset, batch_size=256, num_workers=2, drop_last=True)
 
 cifar10_lenet = models.googlenet(pretrained=False)
 cifar10_resnet18 = models.resnet18(pretrained=False)
@@ -244,22 +243,46 @@ def top_k_accuracy(outputs, labels, k=3):
 
     return top_k_acc
 
-# MEMORIZATION METRIC
+# MEMORIZATION METRICS
 def compute_memorization(model, dataloader, mu_c_dict_test):
     global features
     features = FeaturesHook()
     features.clear()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    if mode == 'resnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode == 'densenet':
+        handle_F = model.features.norm5.register_forward_hook(save_feature_F)
+        handle_H = model.classifier.register_forward_hook(save_feature_H)
+    elif mode == 'lenet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'regnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'efficientnet':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    elif mode == 'mnas':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    else:
+        raise ValueError("Mode not supported")
+
     memorization = 0
     model.eval()
     for idx, (inputs, targets) in enumerate(dataloader):
         with torch.no_grad():
-            inputs, targets = inputs.to(device) , targets.to(device)
+            inputs = inputs.to(device)
+            targets = targets.to(device)
             outputs = model(inputs)
             current_features_F = features.features_F[-1].squeeze()
 
             # Reset delle liste di features per il prossimo batch
             features.clear()
-            # Itera sul tensore delle feature per gestire singoli campioni e aggiornre la media delle classi
+            # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi
             for b, features_sample in enumerate(current_features_F):
               y = targets[b].item()
               distance = torch.dist(features_sample, mu_c_dict_test[y])
@@ -267,6 +290,51 @@ def compute_memorization(model, dataloader, mu_c_dict_test):
             
     return memorization/len(dataloader)
 
+def compute_total_memorization(model, dataloader, mu_c_dict_test):
+    global features
+    features = FeaturesHook()
+    features.clear()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    if mode == 'resnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode == 'densenet':
+        handle_F = model.features.norm5.register_forward_hook(save_feature_F)
+        handle_H = model.classifier.register_forward_hook(save_feature_H)
+    elif mode == 'lenet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'regnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'efficientnet':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    elif mode == 'mnas':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    else:
+        raise ValueError("Mode not supported")
+
+    memorization = 0
+    model.eval()
+    for idx, (inputs, targets) in enumerate(dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            targets = targets[:,1:,:].squeeze().to(device)
+            outputs = model(inputs)
+            current_features_F = features.features_F[-1].squeeze()
+
+            # Reset delle liste di features per il prossimo batch
+            features.clear()
+            # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi
+            for b, features_sample in enumerate(current_features_F):
+              y = targets[b].item()
+              distance = torch.dist(features_sample, mu_c_dict_test[y])
+              memorization += distance.item()
+            
+    return memorization/len(dataloader)
 """NEURAL COLLAPSE METRICS"""
 
 '''
@@ -313,7 +381,8 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
     model.train()
     for idx, (inputs, targets) in enumerate(dataloader):
 
-            inputs, targets = inputs.to(device) , targets.to(device)
+            inputs = inputs.to(device)
+            targets = targets[:,1:,:].squeeze().to(device) # take only corrupted labels
             optimizer.zero_grad()
             outputs = model(inputs)
 
@@ -325,7 +394,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
             # Update network
             one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
-            loss = criterion(outputs, one_hot_targets)
+            loss = criterion(outputs.logits, one_hot_targets)
             loss.backward()
             optimizer.step()
 
@@ -343,11 +412,11 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
                 counter[y] += 1
 
             #Compute accuracy
-            prec1 = top_k_accuracy(outputs,targets ,1)
+            prec1 = top_k_accuracy(outputs.logits,targets ,1)
             top1.append(prec1)
 
     # Normalize to obtain final class means and global mean
-    mu_G /= dataloader.dataset.data.shape[0]
+    mu_G /= len(dataloader.dataset)
     for k in mu_c_dict.keys():
           mu_c_dict[k] /= counter[k]  
 
@@ -356,7 +425,8 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
     model.eval()     
     for idx, (eval_inputs, eval_targets) in enumerate(eval_loader):
         with torch.no_grad():
-            eval_inputs, eval_targets = eval_inputs.to(device) , eval_targets.to(device)
+            eval_inputs = eval_inputs.to(device)
+            eval_targets = eval_targets.to(device)
             eval_outputs = model(eval_inputs)
             eval_prec1=top_k_accuracy(eval_outputs,eval_targets ,1)
             eval_top1.append(eval_prec1)
@@ -435,11 +505,12 @@ def compute_Sigma_W(model, mu_c_dict, dataloader, mode='resnet'):
     model.eval()
     for idx, (inputs, targets) in enumerate(dataloader):
         with torch.no_grad():
-          inputs, targets = inputs.to(device) , targets.to(device)
+          inputs = inputs.to(device)
+          targets = targets[:,1:,:].squeeze().to(device)
           outputs = model(inputs)
 
           current_features_F = features.features_F[-1].squeeze()
-          current_features_H = features.features_H[-1]
+          #current_features_H = features.features_H[-1]
 
           # Reset delle liste di features per il prossimo batch
           features.features_F = []
@@ -450,7 +521,7 @@ def compute_Sigma_W(model, mu_c_dict, dataloader, mode='resnet'):
             y = targets[b].item()
             Sigma_W += (features_sample - mu_c_dict[y]).unsqueeze(1) @ (features_sample - mu_c_dict[y]).unsqueeze(0)
 
-    Sigma_W /= dataloader.dataset.data.shape[0]*num_classes
+    Sigma_W /= (len(dataloader.dataset)*num_classes)
 
     handle_F.remove()
     handle_H.remove()
@@ -507,13 +578,64 @@ def self_dual_alignment(A, mu_c, mu_G,feature_size):
 
     return nc3.cpu().detach().numpy().item()
 
-def show_plot(info_dict, mode, version, dataset_name):
+# Track n samples and show relative distance between its real centroid and its fake centroid
+def get_distance_n_saples(n,model,train_dataset, mu_c_dict_train):
+    '''
+    if distance is positive, sample is more near to its real centroid than its fake centorid...
+    else it is the contrary, and the sample became far away from its real classification centroid.
+    '''
+    global features
+    features = FeaturesHook()
+    features.clear()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    if mode == 'resnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode == 'densenet':
+        handle_F = model.features.norm5.register_forward_hook(save_feature_F)
+        handle_H = model.classifier.register_forward_hook(save_feature_H)
+    elif mode == 'lenet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'regnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'efficientnet':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    elif mode == 'mnas':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    else:
+        raise ValueError("Mode not supported")
+    
+    # Take first n noisy samples from trainining dataset
+    tracked_noise_samples= train_dataset.take_first_n_noise_samples(n)
+    tracked_noise_samples_loader=DataLoader(tracked_noise_samples, batch_size=1, num_workers=2)
+
+    # foreach sample take its features and compute relative distance ( real - fake )
+    distance_dict=dict()
+    model.eval()
+    for idx, (inputs, targets) in enumerate(tracked_noise_samples_loader):
+        with torch.no_grad():
+            y_real = targets[:,:1,:].squeeze().to(device)
+            y_fake = targets[:,1:,:].squeeze().to(device)
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            current_features_F = features.features_F[-1].squeeze()
+            distance_dict[str(idx)]= torch.dist(current_features_F,mu_c_dict_train[y_real.item()]).item() - torch.dist(current_features_F,mu_c_dict_train[y_fake.item()]).item()
+            features.clear()
+
+    return distance_dict
+
+def show_plot(info_dict,track_samples, mode, version, dataset_name):
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
     sns.set_palette("Set2")  # Palette di colori accattivante
 
     # Creare una figura e gli assi per il plot 2x2
-    fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
 
     # Top-left: Accuracy Top-1
     sns.lineplot(x=np.arange(1, len(info_dict['train_acc']) + 1),
@@ -606,19 +728,34 @@ def show_plot(info_dict, mode, version, dataset_name):
     axs[1, 2].set_xlabel('Epochs', fontsize=14)
     axs[1, 2].set_ylabel('Metric Value', fontsize=14)
     
+    for key, v in track_samples.items():
+        rand_color = np.random.rand(3)
+        colore_str = "#{:02x}{:02x}{:02x}".format(int(rand_color[0]*255), int(rand_color[1]*255), int(rand_color[2]*255))
+        sns.lineplot(x=np.arange(1, len(track_samples[key]) + 1),
+            y=track_samples[key],
+            ax=axs[0, 2],
+            marker="d",
+            linewidth=2,
+            color=colore_str,
+            label=key) 
+    axs[0, 2].set_title('Noisy samples behaviour', fontsize=16, fontweight='bold')
+    axs[0, 2].set_xlabel('Epochs', fontsize=14)
+    axs[0, 2].set_ylabel('relative distances', fontsize=14)
+
+
 
     # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
     plt.tight_layout()
-    plt.show()
+    #plt.show()
     # Salvare il grafico in un file PNG
     plt.savefig(f'epoch_{len(info_dict["train_acc"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 ##################################################################################################################################################
 #define dataset, model, its version
-dataset_name='fashion_mnist'
-mode='densenet'
-version='121'
+dataset_name='cifar10'
+mode='lenet'
+version=''
 
 #define model and relative datset to train and collapse
 model = cifar10_lenet
@@ -635,31 +772,12 @@ mnas=False
 
 #datasets
 train_dataset = cifar10_noisy_trainset 
-test_dataset = cifar10_noisy_testset 
+test_dataset = cifar10_testset 
 trainloader = cifar10_trainloader
 testloader = cifar10_testloader
 
 #model.features.conv0 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 model = model.to(device)
-
-
-clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
-clean_labels_dataloader= DataLoader(clean_labels_dataset, batch_size=128, shuffle=True, num_workers=2)
-noisy_labels_dataloader= DataLoader(noisy_labels_dataset, batch_size=128, shuffle=True, num_workers=2)
-
-count=0
-for idx, (inputs, targets) in enumerate(noisy_labels_dataloader):
-    count+=128
-print(count)
-count=0
-for idx, (inputs, targets) in enumerate(clean_labels_dataloader):
-    count+=128
-print(count)
-
-tracked_noise_samples= train_dataset.take_first_n_noise_samples(10)
-tracked_noise_samples_loader=DataLoader(tracked_noise_samples, batch_size=1, num_workers=2)
-for idx, (inputs, targets) in enumerate(tracked_noise_samples_loader):
-    print(targets)
 
 ############################################################################
 #define parameters
@@ -688,6 +806,18 @@ info_dict = {
         #'test_acc3': []
 }
 
+tracking_noise= {
+    '0':[],
+    '1':[],
+    '2':[],
+    '3':[],
+    '4':[],
+    '5':[],
+    '6':[],
+    '7':[],
+    '8':[],
+    '9':[]
+}
 
 for i in range(epochs):
     #TRAIN MODEL at current epoch
@@ -723,7 +853,7 @@ for i in range(epochs):
     alignment= self_dual_alignment(A, mu_c_dict_train, mu_G_train, feature_size)
 
     # Total Memorization
-    memorization= compute_memorization(trainloader, mu_c_dict_test)
+    memorization= compute_total_memorization(model, trainloader, mu_c_dict_test)
 
     # Divide dataset between real and fake samples
     clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
@@ -731,10 +861,14 @@ for i in range(epochs):
     noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=64, num_workers=2, drop_last=False)
 
     # Noise Memorization
-    clean_label_memorization = compute_memorization(clean_dataloader, mu_c_dict_test)
+    clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_dict_test)
     # Real labels Memorization
-    noise_label_memorization = compute_memorization(noisy_dataloader, mu_c_dict_test)
+    noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_dict_test)
 
+    # Track of n noisy samples 
+    features_distance_items = get_distance_n_saples(10 , model, train_dataset, mu_c_dict_train)
+    for key, v in features_distance_items.items():
+        tracking_noise[key].append(v)
 ################################################################################
     #Store NC properties
     info_dict['NC1'].append(collapse_metric)
@@ -759,10 +893,13 @@ for i in range(epochs):
 
     print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric)+' | NC2:'+ str(ETF_metric)+' | NC3:'+ str(alignment)+' | NC4:'+str(nc4)+' | memorization:'+ str(memorization)+' | real labels memorization:'+ str(clean_label_memorization)+' | noise_label_memorization:'+str(noise_label_memorization))
     
-    #if (i+1) % epochs == 0:
-    show_plot(info_dict, mode, version, dataset_name)
-    
+    if (i+1) % 10 == 0:
+        show_plot(info_dict, tracking_noise, mode, version, dataset_name)
+  
     torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights.pth')
 
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_results.pkl', 'wb') as f:
         pickle.dump(info_dict, f)
+    
+    with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track.pkl', 'wb') as f:
+        pickle.dump(tracking_noise, f)
