@@ -147,6 +147,24 @@ class NoisyLabelsDatasetManager(Dataset):
         
         return selected_dataset
     
+    def take_first_n_clean_samples(self, n):
+        # Calcola gli indici dei campioni in cui l'etichetta reale non corrisponde all'etichetta falsa
+        matching_indices = np.where(self.real_labels == self.fake_labels)[0][:n]
+        
+        # Prepara i dati e le etichette per i campioni selezionati
+        selected_data = [self.dataset[i][0] for i in matching_indices]
+        selected_real_labels = self.real_labels[matching_indices]
+        selected_fake_labels = self.fake_labels[matching_indices]
+        
+        # Converte le etichette in tensori di PyTorch
+        selected_real_labels_tensor = torch.tensor(selected_real_labels, dtype=torch.long)
+        selected_fake_labels_tensor = torch.tensor(selected_fake_labels, dtype=torch.long)
+        
+        # Crea un nuovo dataset con i campioni selezionati e le etichette concatenate
+        selected_dataset = NoisyLabelsDataset(dataset=selected_data, real_labels=selected_real_labels_tensor, fake_labels=selected_fake_labels_tensor)
+        
+        return selected_dataset
+
     def divide_samples(self):
         # Split the dataset into two: one where real_label == fake_label and another where they don't match
         matching_indices = np.where(self.real_labels == self.fake_labels)[0]
@@ -473,7 +491,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 """#### $\textbf{Neural Collapse Properties}$"""
 
 # NC1 (sigmaW)
-def compute_Sigma_W(model, mu_c_dict, dataloader, mode='resnet'):
+def compute_Sigma_W_and_force(model, mu_c_dict, dataloader, mode='resnet'):
     global features
     features = FeaturesHook()
 
@@ -502,6 +520,10 @@ def compute_Sigma_W(model, mu_c_dict, dataloader, mode='resnet'):
     Sigma_W = 0
     num_classes = len(mu_c_dict)
 
+    force=[]
+    distance=[]
+    delta_distance=[]
+
     model.eval()
     for idx, (inputs, targets) in enumerate(dataloader):
         with torch.no_grad():
@@ -516,17 +538,29 @@ def compute_Sigma_W(model, mu_c_dict, dataloader, mode='resnet'):
           features.features_F = []
           features.features_H = []
 
-        # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi
+        # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi e la forza
           for b, features_sample in enumerate(current_features_F):
             y = targets[b].item()
             Sigma_W += (features_sample - mu_c_dict[y]).unsqueeze(1) @ (features_sample - mu_c_dict[y]).unsqueeze(0)
+
+            # compute distance and force metric to evaluate sample behavior in the feature space respect their label centorid.
+            force.append( (len(dataloader)/len(mu_c_dict.keys()))  * (1/(torch.abs(features_sample - mu_c_dict[y]))**2) * ( (mu_c_dict[y] - features_sample ) / (torch.abs(mu_c_dict[y] - features_sample )) ) )
+            distance.append((torch.abs(features_sample - mu_c_dict[y])))
+
+            class_indices=list(range(10))
+            del class_indices[y]
+            dist=dict()
+            for i in class_indices:
+                dist[i]=torch.dist(features_sample,mu_c_dict[i]).item()
+            near_centroid_dist=min(dist, key=lambda x: dist[x])
+            delta_distance.append(distance[-1] - near_centroid_dist)
 
     Sigma_W /= (len(dataloader.dataset)*num_classes)
 
     handle_F.remove()
     handle_H.remove()
 
-    return Sigma_W
+    return Sigma_W, force, distance, delta_distance
 
 #NC1 (SigmaB)
 def compute_Sigma_B(mu_c_dict, mu_G):
@@ -579,7 +613,7 @@ def self_dual_alignment(A, mu_c, mu_G,feature_size):
     return nc3.cpu().detach().numpy().item()
 
 # Track n samples and show relative distance between its real centroid and its fake centroid
-def get_distance_n_saples(n,model,train_dataset, mu_c_dict_train):
+def get_distance_n_noisy_saples(n,model,train_dataset, mu_c_dict_train):
     '''
     if distance is positive, sample is more near to its real centroid than its fake centorid...
     else it is the contrary, and the sample became far away from its real classification centroid.
@@ -629,7 +663,66 @@ def get_distance_n_saples(n,model,train_dataset, mu_c_dict_train):
 
     return distance_dict
 
-def show_plot(info_dict,track_samples, mode, version, dataset_name):
+# Track n samples and show relative distance between its real centroid and the second nearest or avg other cetroid
+def get_distance_n_saples(n,model,train_dataset, mu_c_dict_train):
+    '''
+    if distance is positive, sample is more near to its real centroid than other centorid...
+    else it is the contrary, and the sample became far away from its real classification centroid.
+    '''
+    global features
+    features = FeaturesHook()
+    features.clear()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    if mode == 'resnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode == 'densenet':
+        handle_F = model.features.norm5.register_forward_hook(save_feature_F)
+        handle_H = model.classifier.register_forward_hook(save_feature_H)
+    elif mode == 'lenet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'regnet':
+        handle_F = model.avgpool.register_forward_hook(save_feature_F)
+        handle_H = model.fc.register_forward_hook(save_feature_H)
+    elif mode== 'efficientnet':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    elif mode == 'mnas':
+        handle_F = model.classifier[0].register_forward_hook(save_feature_F)
+        handle_H = model.classifier[1].register_forward_hook(save_feature_H)
+    else:
+        raise ValueError("Mode not supported")
+    
+    # Take first n noisy samples from trainining dataset
+    tracked_clean_samples= train_dataset.take_first_n_clean_samples(n)
+    tracked_clean_samples_loader=DataLoader(tracked_clean_samples, batch_size=1, num_workers=2)
+
+    # foreach sample take its features and compute relative distance ( real - fake )
+    distance_dict=dict()
+    model.eval()
+    for idx, (inputs, targets) in enumerate(tracked_clean_samples_loader):
+        with torch.no_grad():
+            y_real = targets[:,:1,:].squeeze().to(device)
+            y_fake = targets[:,1:,:].squeeze().to(device)
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            current_features_F = features.features_F[-1].squeeze()
+            class_indices=list(range(10))
+            del class_indices[y_real.item()]
+            dist=dict()
+            for i in class_indices:
+                dist[i]=torch.dist(current_features_F,mu_c_dict_train[i]).item()
+            near_centroid_dist=min(dist, key=lambda x: dist[x])
+
+            distance_dict[str(idx)]= near_centroid_dist - torch.dist(current_features_F,mu_c_dict_train[y_real.item()]).item() 
+            features.clear()
+
+    return distance_dict
+
+
+def show_plot(info_dict, mode, version, dataset_name):
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
     sns.set_palette("Set2")  # Palette di colori accattivante
@@ -710,6 +803,7 @@ def show_plot(info_dict,track_samples, mode, version, dataset_name):
                  linewidth=2,
                  color='yellow',
                  label='total memo.')  # Cambia il colore e il marker
+    '''
     sns.lineplot(x=np.arange(1, len(info_dict['clean_mem']) + 1),
                  y=info_dict['clean_mem'],
                  ax=axs[1, 2],
@@ -727,29 +821,113 @@ def show_plot(info_dict,track_samples, mode, version, dataset_name):
     axs[1, 2].set_title('Memorization Metrics', fontsize=16, fontweight='bold')
     axs[1, 2].set_xlabel('Epochs', fontsize=14)
     axs[1, 2].set_ylabel('Metric Value', fontsize=14)
-    
-    for key, v in track_samples.items():
-        rand_color = np.random.rand(3)
-        colore_str = "#{:02x}{:02x}{:02x}".format(int(rand_color[0]*255), int(rand_color[1]*255), int(rand_color[2]*255))
-        sns.lineplot(x=np.arange(1, len(track_samples[key]) + 1),
-            y=track_samples[key],
-            ax=axs[0, 2],
-            marker="d",
-            linewidth=2,
-            color=colore_str,
-            label=key) 
-    axs[0, 2].set_title('Noisy samples behaviour', fontsize=16, fontweight='bold')
-    axs[0, 2].set_xlabel('Epochs', fontsize=14)
-    axs[0, 2].set_ylabel('relative distances', fontsize=14)
-
-
-
+    '''
     # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
     plt.tight_layout()
     #plt.show()
     # Salvare il grafico in un file PNG
     plt.savefig(f'epoch_{len(info_dict["train_acc"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
+    
+def show_noise_samples(track_samples,mode,version,dataset_name):
+    # Impostare uno stile di base e una palette di colori
+    sns.set_style("whitegrid")  # Stile con griglia bianca
+
+    # Creare una figura e gli assi per il plot 3x4
+    fig, axs = plt.subplots(3, 4, figsize=(15, 10))
+
+    custom_palette = sns.color_palette(["#FF0B04", "#4374B3", "#008000", "#FFFF00", "#800080", "#808000",
+                                    "#0000FF", "#A52A2A", "#FFD700", "#90EE90", "#F08080", "#ADD8E6"])
+    
+    row=3
+    col=4
+    sample_id=0
+    for r in range(row):
+        for c in range(col):
+            sns.lineplot(x=np.arange(1, len(track_samples[str(sample_id)]) + 1),
+                y=track_samples[str(sample_id)],
+                ax=axs[r, c],
+                marker="d",
+                linewidth=2,
+                color=custom_palette[sample_id],
+                ) 
+            axs[r, c].set_title(f'Noisy sample {sample_id}', fontsize=16, fontweight='bold')
+            axs[r, c].set_xlabel('Epochs', fontsize=14)
+            axs[r, c].set_ylabel('relative distances', fontsize=14)
+            sample_id+=1
+
+    # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
+    plt.tight_layout()
+    # Salvare il grafico in un file PNG
+    plt.savefig(f'noise{int(noise_rate*100)}_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def show_clean_samples(track_samples,mode,version,dataset_name):
+    # Impostare uno stile di base e una palette di colori
+    sns.set_style("whitegrid")  # Stile con griglia bianca
+
+    # Creare una figura e gli assi per il plot 3x4
+    fig, axs = plt.subplots(3, 4, figsize=(15, 10))
+
+    custom_palette = sns.color_palette(["#FF0B04", "#4374B3", "#008000", "#FFFF00", "#800080", "#808000",
+                                    "#0000FF", "#A52A2A", "#FFD700", "#90EE90", "#F08080", "#ADD8E6"])
+    
+    row=3
+    col=4
+    sample_id=0
+    for r in range(row):
+        for c in range(col):
+            sns.lineplot(x=np.arange(1, len(track_samples[str(sample_id)]) + 1),
+                y=track_samples[str(sample_id)],
+                ax=axs[r, c],
+                marker="d",
+                linewidth=2,
+                color=custom_palette[sample_id],
+                ) 
+            axs[r, c].set_title(f'Clean sample {sample_id}', fontsize=16, fontweight='bold')
+            axs[r, c].set_xlabel('Epochs', fontsize=14)
+            axs[r, c].set_ylabel('relative distances', fontsize=14)
+            sample_id+=1
+
+    # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
+    plt.tight_layout()
+    # Salvare il grafico in un file PNG
+    plt.savefig(f'clean_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def show_sample_stability(media_varianza_dizionario,mode,version,dataset_name):
+    medie = [v[0] for v in media_varianza_dizionario.values()]
+    varianze = [v[1] for v in media_varianza_dizionario.values()]
+
+    # Calcola i range per medie e varianze
+    range_medie = np.ptp(medie)
+    range_varianze = np.ptp(varianze)
+
+    # Crea un layout 3x1
+    fig, axes = plt.subplots(3, 1, figsize=(10, 20))
+
+    # Grafico 1: Lineplot medie vs varianze (verde)
+    sns.lineplot(x=medie, y=varianze, ax=axes[0], color='green')
+    axes[0].set_title('Means and Variances', fontsize=16)
+    axes[0].set_xlabel('Mean', fontsize=14)
+    axes[0].set_ylabel('Var', fontsize=14)
+
+    # Grafico 2: Igramma range medie (blu)
+    sns.histplot(medie, bins=np.linspace(min(medie), max(medie), 50), 
+                kde=True, ax=axes[1], alpha=0.7, color='blue')
+    axes[1].set_title('Means Range', fontsize=16)
+    axes[1].set_xlabel('Mean Value', fontsize=14)
+    axes[1].set_ylabel('Frequency', fontsize=14)
+
+    # Grafico 3: Igramma range varianze (rosso)
+    sns.histplot(varianze, bins=np.linspace(min(varianze), max(varianze), 50),
+                kde=True, ax=axes[2], alpha=0.7, color='red')
+    axes[2].set_title('Variance Range', fontsize=16)
+    axes[2].set_xlabel('Variance Value', fontsize=14)
+    axes[2].set_ylabel('Frequency', fontsize=14)
+
+    plt.tight_layout()
+    plt.savefig(f'mean_variance_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
 
 ##################################################################################################################################################
 #define dataset, model, its version
@@ -816,8 +994,27 @@ tracking_noise= {
     '6':[],
     '7':[],
     '8':[],
-    '9':[]
+    '9':[],
+    '10':[],
+    '11':[]
 }
+
+tracking_clean={
+    '0':[],
+    '1':[],
+    '2':[],
+    '3':[],
+    '4':[],
+    '5':[],
+    '6':[],
+    '7':[],
+    '8':[],
+    '9':[],
+    '10':[],
+    '11':[]
+}
+
+force, distance, delta_distance =  {i: [] for i in range(epochs)} , {i: [] for i in range(epochs)} , {i: [] for i in range(epochs)} 
 
 for i in range(epochs):
     #TRAIN MODEL at current epoch
@@ -826,8 +1023,11 @@ for i in range(epochs):
     mu_G_train, mu_c_dict_train, train_acc, eval_acc, nc4, mu_c_dict_test = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, mode=mode)
     #mu_G_test, mu_c_dict_test, test_acc1, test_acc3 = compute_epoch_info( model, testloader, isTrain=False, mode='ResNet')
 
-    #NC1
-    Sigma_W = compute_Sigma_W( model, mu_c_dict_train, trainloader, mode=mode)
+    #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
+    Sigma_W, f, d, delta_d = compute_Sigma_W_and_force( model, mu_c_dict_train, trainloader, mode=mode)
+    force[i]=f 
+    distance[i]=d
+    delta_distance[i]=delta_d
     Sigma_B = compute_Sigma_B(mu_c_dict_train, mu_G_train)
     collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_dict_train.keys()))
 
@@ -853,22 +1053,32 @@ for i in range(epochs):
     alignment= self_dual_alignment(A, mu_c_dict_train, mu_G_train, feature_size)
 
     # Total Memorization
-    memorization= compute_total_memorization(model, trainloader, mu_c_dict_test)
+    memorization=0
+    for c in mu_c_dict_train.keys():
+        memorization+= torch.dist(mu_c_dict_train[c], mu_c_dict_test[c]).item()
+    memorization/=len(mu_c_dict_train.keys())
+    #memorization= compute_total_memorization(model, trainloader, mu_c_dict_test)
 
     # Divide dataset between real and fake samples
-    clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
-    clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
-    noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=64, num_workers=2, drop_last=False)
+    #clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
+    #clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    #noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=64, num_workers=2, drop_last=False)
 
     # Noise Memorization
-    clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_dict_test)
+    #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_dict_test)
     # Real labels Memorization
-    noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_dict_test)
+    #noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_dict_test)
 
     # Track of n noisy samples 
-    features_distance_items = get_distance_n_saples(10 , model, train_dataset, mu_c_dict_train)
+    features_distance_items = get_distance_n_noisy_saples(12 , model, train_dataset, mu_c_dict_train)
     for key, v in features_distance_items.items():
         tracking_noise[key].append(v)
+    
+    #track n clean samples
+    features_distance_items = get_distance_n_saples(12 , model, train_dataset, mu_c_dict_train)
+    for key, v in features_distance_items.items():
+        tracking_clean[key].append(v)
+
 ################################################################################
     #Store NC properties
     info_dict['NC1'].append(collapse_metric)
@@ -876,8 +1086,8 @@ for i in range(epochs):
     info_dict['NC3'].append(alignment)
     info_dict['NC4'].append(nc4)
     info_dict['mem'].append(memorization)
-    info_dict['clean_mem'].append(clean_label_memorization)
-    info_dict['fake_mem'].append(noise_label_memorization)
+    #info_dict['clean_mem'].append(clean_label_memorization)
+    #info_dict['fake_mem'].append(noise_label_memorization)
     # Store penultimate features weights values
     #info_dict['A'].append((A.detach().numpy()))
     #info_dict['H'].append(H.detach().numpy())
@@ -891,11 +1101,13 @@ for i in range(epochs):
     #info_dict['test_acc1'].append(test_acc1)
     #info_dict['test_acc5'].append(test_acc3)
 
-    print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric)+' | NC2:'+ str(ETF_metric)+' | NC3:'+ str(alignment)+' | NC4:'+str(nc4)+' | memorization:'+ str(memorization)+' | real labels memorization:'+ str(clean_label_memorization)+' | noise_label_memorization:'+str(noise_label_memorization))
+    print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric)+' | NC2:'+ str(ETF_metric)+' | NC3:'+ str(alignment)+' | NC4:'+str(nc4)+' | memorization:'+ str(memorization))
     
-    if (i+1) % 10 == 0:
-        show_plot(info_dict, tracking_noise, mode, version, dataset_name)
-  
+    #if (i+1) % 10 == 0:
+    show_plot(info_dict, mode, version, dataset_name) 
+    show_noise_samples(tracking_noise, mode, version, dataset_name)
+    show_clean_samples(tracking_clean, mode, version, dataset_name)
+
     torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights.pth')
 
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_results.pkl', 'wb') as f:
@@ -903,3 +1115,14 @@ for i in range(epochs):
     
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track.pkl', 'wb') as f:
         pickle.dump(tracking_noise, f)
+
+
+# compute mean e variace for distance and force:
+# invert dict
+force = {i: [v[i] for v in force.values()] for i in range(len(force[i]))}
+distance = {i: [v[i] for v in distance.values()] for i in range(len(force[i]))}
+# perform mu and Var
+force_mu_var = {k: [np.mean(v), np.var(v)] for k, v in force.items()}
+distance_mu_var = {k: [np.mean(v), np.var(v)] for k, v in distance.items()}
+
+show_sample_stability(distance_mu_var, mode, version, dataset_name)
