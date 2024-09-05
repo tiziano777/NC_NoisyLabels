@@ -1,24 +1,26 @@
+import torch
+import torchvision
 import numpy as np
 import pickle
-import torch
+import os
+
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Subset
 
 import torchvision.models as models
-import torchvision
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+
 from Hooks import FeaturesHook
 from sample_tracker import SampleTracker
-from PIL import Image
+from tsne import EmbeddingVisualizer2D
 
 import seaborn as sns
 import matplotlib.pyplot as plt
 import scipy.linalg as scilin
 
-import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -343,33 +345,86 @@ def compute_total_memorization(model, dataloader, mu_c_dict_test):
             
     return memorization/len(dataloader)
 
-#Training Function
+#Update centorid values over batch
+def compute_mu_c(features, labels, num_classes):
+    # Inizializza i tensori di output
+    mu_c = torch.zeros((num_classes, features.size(1)), dtype=features.dtype, device=device)
+    counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
+    
+    # Itera su ogni classe e somma le feature corrispondenti
+    for c in range(num_classes):
+        mask = (labels == c)
+        mu_c[c] = features[mask].sum(dim=0)
+        counter[c] = mask.sum()
+    
+    return mu_c, counter
+
+def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
+    # Inizializza i tensori di output
+    weighted_mu_c_batch = torch.zeros((num_classes, features.size(1)), dtype=features.dtype, device=features.device)
+    counter = torch.zeros(num_classes, dtype=torch.int32, device=features.device)
+    
+    # Itera su ogni classe e somma le feature corrispondenti
+    for c in range(num_classes):
+        mask = (labels == c)
+        # class projection
+        class_features = features[mask]
+        
+        if class_features.size(0) > 0:
+            # Perform Distance(mu_c[c],F_i[c]) for every sample i in batch_size
+            distances = torch.cdist(class_features, previous_mu_c[c].unsqueeze(0), p=2).squeeze(1)
+
+            # Perform Weighting factor using a specific function
+            weights = 1 / torch.log(torch.exp(torch.tensor(1.0, device=features.device)) + distances)
+
+            #Alternative distance metrics:
+
+            #alpha=2.0
+            #weights = 1 / (distances ** alpha) 
+
+            #sigma=1.0
+            #weights = torch.exp(-distances / sigma)
+        
+            # Weighted sum
+            weighted_sum = (class_features * weights.unsqueeze(1)).sum(dim=0)
+            # Update centroid 
+            weighted_mu_c_batch[c] = weighted_sum
+            # Update count for normalization factor
+            counter[c] = len(class_features)
+
+    return weighted_mu_c_batch, counter
 
 @measure_time
-def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_classes, mode='resnet'):
+def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_classes, feature_size, mode='resnet'):
     global features
     features = FeaturesHook()
     features.clear()
     handle_F= select_model(mode)
 
     mu_G = 0
-    mu_c_dict = dict()
-    mu_c_dict_test= dict()
-    counter = dict()
-    test_counter= dict()
+
+    mu_c = torch.zeros((num_classes, feature_size), device=device)
+    mu_c_test = torch.zeros((num_classes, feature_size), device=device)
+    mu_c_clean = torch.zeros((num_classes, feature_size), device=device)
+    mu_c_weighted = torch.zeros((num_classes, feature_size), device=device)
+
+    counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
+    clean_counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
+    weighted_counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
+    test_counter= torch.zeros(num_classes, dtype=torch.int32, device=device)
+
     top1 = []
     eval_top1 = []
 
     model.train()
-    for idx, (inputs, targets) in enumerate(dataloader):
-
+    for idx, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)
-            targets = targets[:,1:,:].squeeze().to(device) # take only corrupted labels
+            targets = labels[:,1:,:].squeeze().to(device) # take only corrupted labels
+            real_targets = labels[:,:1,:].squeeze().to(device) #take true labels, useful to create clean centroids.
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs).logits
 
             current_features_F = features.features_F[-1].squeeze()
-
             # Reset delle liste di features per il prossimo batch
             features.clear()
 
@@ -379,28 +434,53 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
             loss.backward()
             optimizer.step()
 
-            # Itera sul tensore delle feature per gestire singoli campioni e aggiornre la media delle classi
-            for b, features_sample in enumerate(current_features_F):
-              # mu_G update
-              mu_G += features_sample
-              #mu_c update
-              y = targets[b].item()
-              if y not in mu_c_dict:
-                mu_c_dict[y] = features_sample
-                counter[y] = 1
-              else:
-                mu_c_dict[y] += features_sample
-                counter[y] += 1
+            # Aggiorna mu_G
+            mu_G += current_features_F.sum(dim=0)
 
+            # Crea maschere per campioni puliti e corrotti
+            clean_mask = targets == real_targets
+            # Aggiorna mu_c_dict e counter per campioni puliti
+            clean_features = current_features_F[clean_mask]
+            clean_targets = targets[clean_mask]
+
+            clean_mu_c_batch, clean_counter_batch= compute_mu_c(clean_features,clean_targets, num_classes)
+            mu_c_batch, counter_batch= compute_mu_c(current_features_F, targets, num_classes)
+
+            mu_c_clean += clean_mu_c_batch
+            mu_c += mu_c_batch
+
+            clean_counter += clean_counter_batch
+            counter += counter_batch
+            
             #Compute accuracy
             prec1 = top_k_accuracy(outputs,targets ,1)
             top1.append(prec1)
 
     # Normalize to obtain final class means and global mean
     mu_G /= len(dataloader.dataset)
-    for k in mu_c_dict.keys():
-          mu_c_dict[k] /= counter[k]  
+    for k in range(len(mu_c)):
+          mu_c[k] /= counter[k] 
+          mu_c_clean[k] /= clean_counter[k] 
+    
+    # perform centroid by weight sample based on distance on mu_c normal centroids
+    model.eval()
+    for idx, (inputs, labels) in enumerate(dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            targets = labels[:,1:,:].squeeze().to(device)
+            outputs = model(inputs)
 
+            current_features_F = features.features_F[-1].squeeze()
+            features.clear()
+
+            weighted_mu_c_batch, weighted_counter_batch= compute_weighted_mu_c(current_features_F, targets, num_classes, mu_c)
+
+            mu_c_weighted += weighted_mu_c_batch
+            weighted_counter += weighted_counter_batch
+
+    for k in range(len(mu_c_weighted)):
+          mu_c_weighted[k] /= weighted_counter[k]  
+        
     # evaluate epoch
     nc4_count=0
     model.eval()     
@@ -414,41 +494,35 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
             #collect features an centroids
             eval_features_F = features.features_F[-1].squeeze() #matrice (batch_size,f)
-            centroid_tensors = torch.stack([torch.tensor(v) for v in mu_c_dict.values()])  #matrix of c points (c,f)
             features.clear()
 
             # Calculate Euclidean distances between F and the centroids
-            centroid_distances = torch.cdist(eval_features_F, centroid_tensors, p=2) #(batch_size,cdist) tensor of distances
+            centroid_distances = torch.cdist(eval_features_F, mu_c, p=2) #(batch_size,cdist) tensor of distances
             # Trova l'indice del centroide più vicino per ogni punto F
             closest_centroids_indices = centroid_distances.argmin(dim=1) #(batch size) tensor containing the index of the minimum distance centroid
 
             # Controlla se la classe reale del campione corrisponde alla classe del centroide più vicino
             for real_class, closest_centroid_index in zip(eval_targets.cpu().numpy(), closest_centroids_indices):
                 real_class = int(real_class)  
-                closest_centroid_class = list(mu_c_dict.keys())[closest_centroid_index.item()]
+                closest_centroid_class = closest_centroid_index.item()  # L'indice rappresenta direttamente la classe del centroide
                 if real_class != closest_centroid_class:
                     nc4_count += 1
 
             nc4_ratio = nc4_count / len(eval_loader.dataset)
 
             # perform test centroids for memorization metric
-            for b, features_sample in enumerate(eval_features_F):
-              #mu_c test
-              y = eval_targets[b].item()
-              if y not in mu_c_dict_test:
-                mu_c_dict_test[y] = features_sample
-                test_counter[y] = 1
-              else:
-                mu_c_dict_test[y] += features_sample
-                test_counter[y] += 1
+            mu_c_test_batch, test_counter_batch= compute_mu_c(eval_features_F, eval_targets, num_classes)
+
+            mu_c_test += mu_c_test_batch
+            test_counter += test_counter_batch
             
     # normalize test centroids            
-    for k in mu_c_dict_test.keys():
-        mu_c_dict_test[k] /= test_counter[k]
+    for k in range(len(mu_c_test)):
+        mu_c_test[k] /= test_counter[k]
 
     handle_F.remove()
-
-    return mu_G, mu_c_dict, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), nc4_ratio, mu_c_dict_test
+    
+    return mu_G, mu_c, mu_c_clean, mu_c_weighted, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), nc4_ratio, mu_c_test
 
 """Neural Collapse Properties and personalized metrics"""
 
@@ -466,17 +540,14 @@ def compute_delta_distance(mu_c_tensor,features_batch,targets,batch_size):
 
 # NC1 (sigmaW)
 @measure_time
-def compute_Sigma_W_and_distance(model, mu_c_dict, dataloader,delta_distance_tracker,distance_tracker, mode='resnet'):
+def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader,delta_distance_tracker,distance_tracker, mode='resnet'):
     global features
     features = FeaturesHook()
 
     # Aggiungi l'hook al penultimo layer del modello
     handle_F = select_model(mode)
-
     Sigma_W = 0
-    num_classes = len(mu_c_dict)
-
-    mu_c_tensor=torch.stack( [torch.tensor(v) for v in mu_c_dict.values()], dim=0).to(device)
+    num_classes = len(mu_c_tensor)
 
     model.eval()
     for idx, (inputs, targets) in enumerate(dataloader):
@@ -494,7 +565,7 @@ def compute_Sigma_W_and_distance(model, mu_c_dict, dataloader,delta_distance_tra
 
             #Sigma_W
             target_indices = targets.long()
-            mu_c_batch = torch.stack([mu_c_dict[y.item()] for y in target_indices]).to(device)
+            mu_c_batch = mu_c_tensor[target_indices].to(device)
             diff = current_features_F - mu_c_batch
             Sigma_W += (diff.unsqueeze(2) @ diff.unsqueeze(1)).sum(dim=0)
 
@@ -506,41 +577,37 @@ def compute_Sigma_W_and_distance(model, mu_c_dict, dataloader,delta_distance_tra
             centroid_distance = distances[torch.arange(batch_size), targets]  # take distance from label class centroid
             distance_tracker.add_epoch_results(idx,centroid_distance)
 
-
             del inputs, outputs, current_features_F
-   
 
     Sigma_W /= (len(dataloader.dataset)*num_classes)
-
     handle_F.remove()
-    del mu_c_tensor
 
     return Sigma_W
 
 #NC1 (SigmaB)
-def compute_Sigma_B(mu_c_dict, mu_G):
+def compute_Sigma_B(mu_c, mu_G):
     Sigma_B = 0
-    K = len(mu_c_dict)
+    K = len(mu_c)
     #for key in mu_c_dict.keys():
         #print(mu_c_dict[key].shape)
     for i in range(K):
         # Ensure mu_G is the same shape as mu_c_dict[i] before subtraction
-        mu_G_reshaped = mu_G.reshape(mu_c_dict[i].shape)
-        Sigma_B += (mu_c_dict[i] - mu_G_reshaped).unsqueeze(1) @ (mu_c_dict[i] - mu_G_reshaped).unsqueeze(0)
+        mu_G_reshaped = mu_G.reshape(mu_c[i].shape)
+        Sigma_B += (mu_c[i] - mu_G_reshaped).unsqueeze(1) @ (mu_c[i] - mu_G_reshaped).unsqueeze(0)
 
     Sigma_B /= K
     return Sigma_B
 
 #NC2
 def compute_ETF(mu_c, mu_G, feature_size):
-    K = len(mu_c.keys())
+    K = len(mu_c)
     M = torch.empty((K, feature_size))  # Set second param with right size of penultimate feature layer of the model
 
     # Calcolo delle distanze relative tra centroide di classe e centroide globale
-    for key, value in mu_c.items():
+    for i in range(len(mu_c)):
         #print(value.shape)
         #print(mu_G.shape)
-        M[key] = (value - mu_G) / torch.norm(value - mu_G, dim=-1, keepdim=True)
+        M[i] = (mu_c[i] - mu_G) / torch.norm(mu_c[i] - mu_G, dim=-1, keepdim=True)
 
     MMT= M @ M.t()
     sub = (torch.eye(K) - 1 / K * torch.ones((K, K))) / pow(K - 1, 0.5)
@@ -551,11 +618,11 @@ def compute_ETF(mu_c, mu_G, feature_size):
 
 #NC3
 def self_dual_alignment(A, mu_c, mu_G,feature_size):
-    K = len(mu_c.keys())
+    K = len(mu_c)
     M = torch.empty((K, feature_size))  # Set second param with right size of penultimate feature layer of the model
     # Calcolo delle distanze relative tra centroide di classe e centroide globale
-    for key, value in mu_c.items():
-        M[key] = (value - mu_G) / torch.norm(value - mu_G, dim=-1, keepdim=True)
+    for i in range(len(mu_c)):
+        M[i] = (mu_c[i] - mu_G) / torch.norm(mu_c[i] - mu_G, dim=-1, keepdim=True)
 
     MT=M.t()
     A = A.to(device)
@@ -573,7 +640,7 @@ def self_dual_alignment(A, mu_c, mu_G,feature_size):
     else it is the contrary, and the sample became far away from its real classification centroid.
     We want a positive tendency value or ZERO, else memorization occur.
     '''
-def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_dict_train):
+def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_train):
 
     global features
     features = FeaturesHook()
@@ -602,10 +669,10 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_dict_train):
             del class_indices[y_real.item()]
             dist=dict()
             for i in class_indices:
-                dist[i]=torch.dist(current_features_F,mu_c_dict_train[i]).item()
+                dist[i]=torch.dist(current_features_F,mu_c_train[i]).item()
             near_centroid_dist=min(dist, key=lambda x: dist[x])
 
-            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_dict_train[y_fake.item()]).item() - near_centroid_dist 
+            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_train[y_fake.item()]).item() - near_centroid_dist 
             features.clear()
 
     return distance_dict
@@ -616,7 +683,7 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_dict_train):
     if distance is negative, the sample resides near its real classification centroid.
     We want a negative value as possible
 '''
-def get_distance_n_samples(n,model,train_dataset, mu_c_dict_train):
+def get_distance_n_samples(n,model,train_dataset, mu_c_train):
    
     global features
     features = FeaturesHook()
@@ -645,10 +712,10 @@ def get_distance_n_samples(n,model,train_dataset, mu_c_dict_train):
             del class_indices[y_real.item()]
             dist=dict()
             for i in class_indices:
-                dist[i]=torch.dist(current_features_F,mu_c_dict_train[i]).item()
+                dist[i]=torch.dist(current_features_F,mu_c_train[i]).item()
             near_centroid_dist=min(dist, key=lambda x: dist[x])
 
-            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_dict_train[y_real.item()]).item() - near_centroid_dist
+            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_train[y_real.item()]).item() - near_centroid_dist
             features.clear()
 
     return distance_dict
@@ -883,18 +950,18 @@ def show_mean_var_relevations(tensor, mode, version, dataset_name,noisy_indices,
 ##################################################################################################################################################
 #define dataset, model, its version
 dataset_name='cifar10'
-mode='resnet'
-version='18'
+mode='lenet'
+version=''
 
 #define model and relative datset to train and collapse
-model = cifar10_resnet18
+model = cifar10_lenet
 num_classes = cifar10_classes
-feature_size =  resnet_feature_size
+feature_size =  lenet_feature_size
 
 #flags
-resnet=True
+resnet=False
 densenet=False
-lenet=False
+lenet=True
 regnet=False
 efficientnet=False
 mnas=False
@@ -971,13 +1038,12 @@ for i in range(epochs):
     #TRAIN MODEL at current epoch
 
     #Evaluate NC properties at current epoch
-    mu_G_train, mu_c_dict_train, train_acc, eval_acc, nc4, mu_c_dict_test = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, mode=mode)
+    mu_G_train, mu_c_train, mu_c_clean, mu_c_weighted, train_acc, eval_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, feature_size, mode=mode)
 
     #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
-    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_dict_train, trainloader, delta_distance_tracker, distance_tracker, mode=mode)
-
-    Sigma_B = compute_Sigma_B(mu_c_dict_train, mu_G_train)
-    collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_dict_train.keys()))
+    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker, mode=mode)
+    Sigma_B = compute_Sigma_B(mu_c_train, mu_G_train)
+    collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_train))
 
     #NC2
     if resnet:
@@ -995,31 +1061,31 @@ for i in range(epochs):
     else:
       break
 
-    ETF_metric = compute_ETF(mu_c_dict_train, mu_G_train,feature_size)
+    ETF_metric = compute_ETF(mu_c_train, mu_G_train,feature_size)
 
     #NC3
-    alignment= self_dual_alignment(A, mu_c_dict_train, mu_G_train, feature_size)
+    alignment= self_dual_alignment(A, mu_c_train, mu_G_train, feature_size)
 
     # Total Memorization
-    #memorization= compute_total_memorization(model, trainloader, mu_c_dict_test)
-
+    #memorization= compute_total_memorization(model, trainloader, mu_c_test)
+    
     # Divide dataset between real and fake samples
     clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
-    #clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
-    #noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
 
     # Noise Memorization
-    #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_dict_test)
+    #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_test)
     # Real labels Memorization
-    #noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_dict_test)
+    #noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_test)
 
     # Track of n noisy samples 
-    features_distance_items = get_distance_n_noisy_samples(12 , model, train_dataset, mu_c_dict_train)
+    features_distance_items = get_distance_n_noisy_samples(12 , model, train_dataset, mu_c_train)
     for key, v in features_distance_items.items():
         tracking_noise[key].append(v)
     
     #track n clean samples
-    features_distance_items = get_distance_n_samples(12 , model, train_dataset, mu_c_dict_train)
+    features_distance_items = get_distance_n_samples(12 , model, train_dataset, mu_c_train)
     for key, v in features_distance_items.items():
         tracking_clean[key].append(v)
 
@@ -1029,9 +1095,9 @@ for i in range(epochs):
     info_dict['NC2'].append(ETF_metric)
     info_dict['NC3'].append(alignment)
     info_dict['NC4'].append(nc4)
-    info_dict['mu_c_train'].append(mu_c_dict_train)
-    #info_dict['mu_c_wighted'].append()
-    #info_dict['mu_c_clean'].append()
+    info_dict['mu_c_train'].append(mu_c_train)
+    info_dict['mu_c_weighted'].append(mu_c_weighted)
+    info_dict['mu_c_clean'].append(mu_c_clean)
     #info_dict['mem'].append(memorization)
     #info_dict['clean_mem'].append(clean_label_memorization)
     #info_dict['fake_mem'].append(noise_label_memorization)
@@ -1050,9 +1116,13 @@ for i in range(epochs):
         delta_distances= delta_distance_tracker.tensorize()
         distances= distance_tracker.tensorize()
 
-        show_mean_var_relevations(delta_distances,mode,version,dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
+        show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
 
         del delta_distances,distances
+
+    #if (i+1) % 5 == 0:
+    visualizer = EmbeddingVisualizer2D(model, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
+    visualizer.run()
 
     torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights.pth')
 

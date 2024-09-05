@@ -1,5 +1,0 @@
-https://github.com/tding1/Neural-Collapse
-
-https://colab.research.google.com/github/neuralcollapse/neuralcollapse/blob/main/neuralcollapse.ipynb
-
-

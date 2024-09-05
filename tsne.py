@@ -1,66 +1,91 @@
 import torch
-from torch.utils.tensorboard import SummaryWriter
-from sklearn.manifold import TSNE
+import time
+import seaborn as sns
 import matplotlib.pyplot as plt
-import numpy as np
-import plotly.graph_objects as go
+from tsnecuda import TSNE
 
-# Assumiamo che tu abbia già il tuo modello, i dati e l'array degli indici dei campioni rumorosi
-model = # ... il tuo modello ...
-data_loader = # ... il tuo data loader ...
-noisy_indices = # ... l'array degli indici dei campioni rumorosi ...
+def measure_time(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"{func.__name__} took {elapsed_time:.4f} seconds")
+        return result
+    return wrapper
 
-# Estrai gli embedding
-embeddings = []
-labels = []
+class EmbeddingVisualizer2D:
+    def __init__(self, model, mode, version, dataset_name, epoch, device, data_loader, noisy_indices, mu_c, mu_c_weighted, mu_c_clean):
+        self.model = model
+        self.mode = mode
+        self.version = version
+        self.dataset_name = dataset_name
+        self.epoch = epoch
+        self.device = device
+        self.data_loader = data_loader
+        self.noisy_indices = noisy_indices
+        self.mu_c = mu_c
+        self.mu_c_weighted = mu_c_weighted
+        self.mu_c_clean = mu_c_clean
+        self.embeddings = []
+        self.labels = []
+        self.colors_map = {
+            0: 'brown', 1: 'yellow', 2: 'purple', 3: 'blue', 4: 'green',
+            5: 'gray', 6: 'orange', 7: 'lavender', 8: 'lightblue', 9: 'aqua'
+        }
+        self.noisy_color = 'magenta'  # Colore acceso per i noisy samples
+    
+    @measure_time
+    def extract_embeddings(self):
+        with torch.no_grad():
+            self.model.eval()
+            for batch in self.data_loader:
+                inputs, raw_labels = batch
+                inputs = inputs.to(self.device)
+                raw_labels = torch.tensor(raw_labels).to(self.device)
 
-with torch.no_grad():
-    for batch in data_loader:
-        inputs, targets = batch
-        outputs = model(inputs)
-        embeddings.extend(outputs.cpu().numpy())
-        labels.extend(targets.cpu().numpy())
+                targets = raw_labels[:, 1:, :].squeeze().to(self.device)
+                outputs = self.model(inputs)
 
-# Applica t-SNE per ridurre a 3 dimensioni
-tsne_embeddings = TSNE(n_components=3).fit_transform(embeddings)
+                self.embeddings.extend(outputs.cpu().numpy())
+                self.labels.extend(targets.cpu().numpy())
 
-# Crea uno scrittore TensorBoard
-writer = SummaryWriter('runs/embedding_visualization_3d')
+    @measure_time
+    def apply_tsne(self):
+        embeddings_tensor = torch.tensor(self.embeddings).cpu().numpy()
+        self.tsne_embeddings = TSNE(n_components=2, perplexity=15, learning_rate=10).fit_transform(embeddings_tensor)
 
-# Prepara i colori per i punti
-colors = ['green' if i not in noisy_indices else 'red' for i in range(len(tsne_embeddings))]
+    @measure_time
+    def visualize_embeddings(self):
+        # Prepara i colori per i punti
+        colors = [
+            self.noisy_color if i in self.noisy_indices else self.colors_map[label]
+            for i, label in enumerate(self.labels)
+        ]
 
-# Scrivi gli embedding su TensorBoard
-for i, (embedding, label) in enumerate(zip(tsne_embeddings, labels)):
-    writer.add_embedding(
-        [embedding],
-        metadata=[f'Label: {label}'],
-        tag=f'Embedding_{i}',
-        global_step=i,
-        colors=[colors[i]]
-    )
+        # Visualizzazione 2D con Seaborn
+        plt.figure(figsize=(10, 8))
+        sns.scatterplot(x=self.tsne_embeddings[:, 0], y=self.tsne_embeddings[:, 1], hue=colors, palette=colors, legend=False)
 
-# Chiudi lo scrittore
-writer.close()
+        # Aggiungi i centroidi mu_c, mu_c_weighted e mu_c_clean
+        self.add_centroids_to_plot(self.mu_c, 'black', 'mu_c')
+        self.add_centroids_to_plot(self.mu_c_weighted, 'darkblue', 'mu_c_weighted')
+        self.add_centroids_to_plot(self.mu_c_clean, 'red', 'mu_c_clean')
 
-# Visualizzazione 3D con Plotly
-fig = go.Figure(data=[
-    go.Scatter3d(
-        x=tsne_embeddings[:, 0],
-        y=tsne_embeddings[:, 1],
-        z=tsne_embeddings[:, 2],
-        mode='markers',
-        marker=dict(color=colors),
-        text=[f'Label: {label}' for label in labels]
-    )
-])
+        # Titolo e label degli assi
+        plt.title(f"2D t-SNE Visualization of Embeddings (Epoch {self.epoch})")
+        plt.xlabel('Component 1')
+        plt.ylabel('Component 2')
 
-fig.update_layout(
-    title="3D t-SNE Visualization of Embeddings",
-    scene=dict(
-        xaxis_title='Component 1',
-        yaxis_title='Component 2',
-        zaxis_title='Component 3'),
-)
+        # Salva la figura
+        plt.savefig("embedding_visualization_2d.png")
+        plt.show()
 
-fig.show()
+    def add_centroids_to_plot(self, centroids, color, name):
+        plt.scatter(centroids[:, 0], centroids[:, 1], color=color, s=100, label=name, edgecolor='k')
+        plt.legend()
+
+    def run(self):
+        self.extract_embeddings()
+        self.apply_tsne()
+        self.visualize_embeddings()
