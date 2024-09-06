@@ -68,9 +68,9 @@ class EmbeddingVisualizer2D:
         sns.scatterplot(x=self.tsne_embeddings[:, 0], y=self.tsne_embeddings[:, 1], hue=colors, palette=colors, legend=False)
 
         # Aggiungi i centroidi mu_c, mu_c_weighted e mu_c_clean
-        self.add_centroids_to_plot(self.mu_c, 'black', 'mu_c')
-        self.add_centroids_to_plot(self.mu_c_weighted, 'darkblue', 'mu_c_weighted')
-        self.add_centroids_to_plot(self.mu_c_clean, 'red', 'mu_c_clean')
+        self.add_centroids_to_plot(self.mu_c.cpu().numpy(), 'black', 'mu_c')
+        self.add_centroids_to_plot(self.mu_c_weighted.cpu().numpy(), 'darkblue', 'mu_c_weighted')
+        self.add_centroids_to_plot(self.mu_c_clean.cpu().numpy(), 'red', 'mu_c_clean')
 
         # Titolo e label degli assi
         plt.title(f"2D t-SNE Visualization of Embeddings (Epoch {self.epoch})")

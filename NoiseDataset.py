@@ -1,5 +1,4 @@
 import torch
-import torchvision
 import numpy as np
 import pickle
 import os
@@ -947,6 +946,42 @@ def show_mean_var_relevations(tensor, mode, version, dataset_name,noisy_indices,
     plt.savefig(f'mean_variance_epoch_{len(tensor[0])}_{dict_type}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
+def show_centroid_distances(weighted_dist, normal_dist, current_epoch,mode,version,dataset_name):
+
+    # Impostare uno stile di base e una palette di colori
+    sns.set_style("whitegrid")  # Stile con griglia bianca
+
+    # Imposta lo stile di Seaborn
+    sns.set(style="whitegrid")
+
+    fig, axs = plt.subplots(2, 5, figsize=(15, 6))  # 2 righe e 5 colonne di grafici
+
+    for i in range(num_classes):
+        ax = axs[i // 5, i % 5]  # Seleziona il grafico in base alla classe
+        
+        # Plot delle distanze usando Seaborn
+        sns.lineplot(x=torch.arange(weighted_dist.size(0)), 
+                     y=weighted_dist[:, i].numpy(), 
+                     color='green', 
+                     label=f'Weighted centroid distance from clean', 
+                     ax=ax)
+        
+        sns.lineplot(x=torch.arange(normal_dist.size(0)), 
+                     y=normal_dist[:, i].numpy(), 
+                     color='red', 
+                     label=f'CB({i})', 
+                     ax=ax)
+        
+        ax.set_title(f'Class {i}: normal centroid vs clean centorid')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Distance')
+        ax.legend()
+
+    # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
+    plt.tight_layout()
+    # Salvare il grafico in un file PNG
+    plt.savefig(f'centroid_distances_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+
 ##################################################################################################################################################
 #define dataset, model, its version
 dataset_name='cifar10'
@@ -1032,7 +1067,9 @@ tracking_clean={
 delta_distance_tracker=SampleTracker()
 distance_tracker=SampleTracker()
 
-#TODO: angular variation
+clean_weighted_centroid_distances = torch.zeros(((num_epochs), num_classes))
+clean_real_centroid_distances = torch.zeros(((num_epochs) , num_classes))
+
 
 for i in range(epochs):
     #TRAIN MODEL at current epoch
@@ -1106,8 +1143,13 @@ for i in range(epochs):
     info_dict['train_acc'].append(train_acc)
     info_dict['eval_acc'].append(eval_acc)
 
-    print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
-    
+    #Compute distances between computed centroids
+    clean_weighted = torch.norm(A - B, dim=1)  
+    clean_real = torch.norm(C - B, dim=1)  
+    # Store distances at current epoch
+    clean_weighted_centroid_distances[i, :] = clean_weighted
+    clean_real_centroid_distances[i, :] = clean_real
+
     if (i+1) % 10 == 0:
         show_plot(info_dict, mode, version, dataset_name) 
         show_noise_samples(tracking_noise, mode, version, dataset_name)
@@ -1120,14 +1162,20 @@ for i in range(epochs):
 
         del delta_distances,distances
 
-    #if (i+1) % 5 == 0:
-    visualizer = EmbeddingVisualizer2D(model, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
-    visualizer.run()
+    if (i+1) % 5 == 0:
+        visualizer = EmbeddingVisualizer2D(model, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
+        visualizer.run()
+
 
     torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights.pth')
 
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_results.pkl', 'wb') as f:
         pickle.dump(info_dict, f)
-    
+
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track.pkl', 'wb') as f:
         pickle.dump(tracking_noise, f)
+
+    print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
+    
+show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
+
