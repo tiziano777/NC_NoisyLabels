@@ -247,15 +247,15 @@ class NoisyLabelsDatasetManager(Dataset):
 cifar10_trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
 cifar10_testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
 
+# Creazione degli oggetti NoisyLabelsDataset
+cifar10_noisy_trainset = NoisyLabelsDatasetManager(cifar10_trainset, noise_rate=noise_rate)
+
 # Shuffle the trainset
 num_samples = len(cifar10_trainset)
 indices = np.arange(num_samples)
 # Esegui lo shuffle degli indici
 np.random.shuffle(indices)
 cifar10_trainset = Subset(cifar10_trainset, indices)
-
-# Creazione degli oggetti NoisyLabelsDataset
-cifar10_noisy_trainset = NoisyLabelsDatasetManager(cifar10_trainset, noise_rate=noise_rate)
 
 # Configurazione del DataLoader
 cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=256, num_workers=2, drop_last=False)
@@ -388,7 +388,7 @@ def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
             distances = torch.cdist(class_features, previous_mu_c[c].unsqueeze(0), p=2).squeeze(1)
 
             # Perform Weighting factor using a specific function
-            weights = 1 / torch.log(torch.exp(torch.tensor(1.0, device=features.device)) + distances)
+            weights = torch.log(torch.exp(torch.tensor(1.0, device=features.device)) + distances) / 0.43
 
             #Alternative distance metrics:
 
@@ -910,50 +910,92 @@ def show_clean_samples(track_samples,mode,version,dataset_name):
     plt.savefig(f'clean_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def show_mean_var_relevations(tensor, mode, version, dataset_name,noisy_indices, dict_type='delta_distance', ):
- 
+
+def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices, dict_type='delta_distance'):
     # Calcola le medie e le varianze per ogni riga (N,)
     means = tensor.mean(dim=1).cpu().numpy()
     variances = tensor.var(dim=1).cpu().numpy()
+
+    # Determina gli indici per i campioni "clean" (non rumorosi)
+    clean_indices = np.setdiff1d(np.arange(tensor.shape[0]), noisy_indices)
+
+    # Estrai medie e varianze per i campioni "clean" e "noisy"
+    clean_means = means[clean_indices]
+    clean_variances = variances[clean_indices]
+    noisy_means = means[noisy_indices]
+    noisy_variances = variances[noisy_indices]
 
     # Impostazioni di Seaborn per un grafico più accattivante
     sns.set_style("whitegrid")
     sns.set_palette('deep')
 
-    # Crea la figura e gli assi
-    fig, axes = plt.subplots(3, 1, figsize=(8, 15))
+    # Crea la figura e gli assi (3x3 layout)
+    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
 
-    # Istogramma delle medie
-    sns.histplot(means, bins=30, ax=axes[0], color='skyblue')
-    axes[0].set_title('Histogram of Means')
-    axes[0].set_xlabel('Mean')
-    axes[0].set_ylabel('Count')
+    # Prima colonna: Tutti i campioni
+    sns.histplot(means, bins=30, ax=axes[0, 0], color='skyblue')
+    axes[0, 0].set_title('All Samples: Histogram of Means')
+    axes[0, 0].set_xlabel('Mean')
+    axes[0, 0].set_ylabel('Count')
 
-    # Istogramma delle varianze
-    sns.histplot(variances, bins=30, ax=axes[1], color='lightcoral')
-    axes[1].set_title('Histogram of Variances')
-    axes[1].set_xlabel('Variance')
-    axes[1].set_ylabel('Count')
+    sns.histplot(variances, bins=30, ax=axes[1, 0], color='lightcoral')
+    axes[1, 0].set_title('All Samples: Histogram of Variances')
+    axes[1, 0].set_xlabel('Variance')
+    axes[1, 0].set_ylabel('Count')
 
-    # Scatter plot con KDE
-    # Disegna prima i punti non evidenziati
-    sns.scatterplot(x=means, y=variances, ax=axes[2], color='green', label='Normal Points')
+    # Scatter plot con separazione dei campioni rumorosi
+    sns.scatterplot(x=means, y=variances, ax=axes[2, 0], color='green', label='Clean Samples')
+    sns.scatterplot(x=noisy_means, y=noisy_variances, ax=axes[2, 0], color='red', label='Noisy Samples', edgecolor='black', alpha=0.7)
+    sns.kdeplot(x=means, y=variances, ax=axes[2, 0], cmap="Blues_r", fill=True, alpha=0.5)
+    axes[2, 0].set_title('All Samples: Scatter plot of Means vs Variances')
+    axes[2, 0].set_xlabel('Mean')
+    axes[2, 0].set_ylabel('Variance')
+    axes[2, 0].legend()
 
-    # Se noisy_indices è fornito e non è vuoto
-    if noisy_indices is not None and len(noisy_indices) > 0:
-        # Seleziona i punti da evidenziare e dissegnali sopra quelli normali
-        noisy_means = means[noisy_indices]
-        noisy_variances = variances[noisy_indices]
-        sns.scatterplot(x=noisy_means, y=noisy_variances, ax=axes[2], color='red', label='Noisy Points', edgecolor='black', alpha=0.7)
+    # Trova i limiti comuni per l'asse Y nei grafici delle medie
+    all_counts, _ = np.histogram(means, bins=30)
+    clean_counts, _ = np.histogram(clean_means, bins=30)
+    noisy_counts, _ = np.histogram(noisy_means, bins=30)
+    
+    max_count = max(all_counts.max(), clean_counts.max(), noisy_counts.max())
 
-    # Disegna la KDE plot
-    sns.kdeplot(x=means, y=variances, ax=axes[2], cmap="Blues_r", fill=True, alpha=0.5)
+    # Seconda colonna: Campioni puliti (clean)
+    sns.histplot(clean_means, bins=30, ax=axes[0, 1], color='skyblue')
+    axes[0, 1].set_title('Clean Samples: Histogram of Means')
+    axes[0, 1].set_xlabel('Mean')
+    axes[0, 1].set_ylabel('Count')
+    axes[0, 1].set_ylim(0, max_count)
 
-    # Aggiungi le etichette e la leggenda
-    axes[2].set_title('Scatter plot of Means vs Variances with KDE')
-    axes[2].set_xlabel('Mean')
-    axes[2].set_ylabel('Variance')
-    axes[2].legend()
+    sns.histplot(clean_variances, bins=30, ax=axes[1, 1], color='lightcoral')
+    axes[1, 1].set_title('Clean Samples: Histogram of Variances')
+    axes[1, 1].set_xlabel('Variance')
+    axes[1, 1].set_ylabel('Count')
+
+    sns.scatterplot(x=clean_means, y=clean_variances, ax=axes[2, 1], color='green', label='Clean Samples')
+    sns.kdeplot(x=clean_means, y=clean_variances, ax=axes[2, 1], cmap="Blues_r", fill=True, alpha=0.5)
+    axes[2, 1].set_title('Clean Samples: Scatter plot of Means vs Variances')
+    axes[2, 1].set_xlabel('Mean')
+    axes[2, 1].set_ylabel('Variance')
+    axes[2, 1].legend()
+
+    # Terza colonna: Campioni rumorosi (noisy)
+    sns.histplot(noisy_means, bins=30, ax=axes[0, 2], color='skyblue')
+    axes[0, 2].set_title('Noisy Samples: Histogram of Means')
+    axes[0, 2].set_xlabel('Mean')
+    axes[0, 2].set_ylabel('Count')
+    axes[0, 2].set_ylim(0, max_count)
+
+    sns.histplot(noisy_variances, bins=30, ax=axes[1, 2], color='lightcoral')
+    axes[1, 2].set_title('Noisy Samples: Histogram of Variances')
+    axes[1, 2].set_xlabel('Variance')
+    axes[1, 2].set_ylabel('Count')
+
+    sns.scatterplot(x=noisy_means, y=noisy_variances, ax=axes[2, 2], color='red', label='Noisy Samples', edgecolor='black', alpha=0.7)
+    sns.kdeplot(x=noisy_means, y=noisy_variances, ax=axes[2, 2], cmap="Blues_r", fill=True, alpha=0.5)
+    axes[2, 2].set_title('Noisy Samples: Scatter plot of Means vs Variances')
+    axes[2, 2].set_xlabel('Mean')
+    axes[2, 2].set_ylabel('Variance')
+    axes[2, 2].legend()
 
     plt.tight_layout()
     # Salvare il grafico in un file PNG
@@ -1002,7 +1044,7 @@ dataset_name='cifar10'
 mode='lenet'
 version=''
 
-#define model and relative datset to train and collapse
+#define model and relative dataset to train and collapse
 model = cifar10_lenet
 num_classes = cifar10_classes
 feature_size =  lenet_feature_size
@@ -1026,7 +1068,7 @@ model = model.to(device)
 
 ############################################################################
 #define parameters
-epochs=50
+epochs=30
 
 # MSE+WD and low LR 
 criterion= nn.BCEWithLogitsLoss()
@@ -1165,7 +1207,7 @@ for i in range(epochs):
     clean_weighted_centroid_distances[i, :] = clean_weighted
     clean_real_centroid_distances[i, :] = clean_real
 
-    if (i+1) % 10 == 0:
+    if (i+1) % 5 == 0:
         show_plot(info_dict, mode, version, dataset_name) 
         show_noise_samples(tracking_noise, mode, version, dataset_name)
         show_clean_samples(tracking_clean, mode, version, dataset_name)
@@ -1176,8 +1218,9 @@ for i in range(epochs):
         show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
 
         del delta_distances,distances
+        
     '''
-    if (i+1) % 50 == 0:
+    if (i+1) % epochs == 0:
         visualizer = EmbeddingVisualizer2D(model,feature_size, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
         visualizer.run()
     '''
@@ -1192,5 +1235,5 @@ for i in range(epochs):
 
     print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
     
-show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
+#show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
 
