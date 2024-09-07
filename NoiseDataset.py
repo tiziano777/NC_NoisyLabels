@@ -23,6 +23,21 @@ import scipy.linalg as scilin
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def print_cuda_devices():
+    if torch.cuda.is_available():
+        num_devices = torch.cuda.device_count()
+        print(f"Number of CUDA devices available: {num_devices}")
+        for i in range(num_devices):
+            print(f"Device {i}: {torch.cuda.get_device_name(i)}")
+            print(f"  - Memory Allocated: {torch.cuda.memory_allocated(i) / (1024 ** 3):.2f} GB")
+            print(f"  - Memory Cached: {torch.cuda.memory_reserved(i) / (1024 ** 3):.2f} GB")
+            print(f"  - Total Memory: {torch.cuda.get_device_properties(i).total_memory / (1024 ** 3):.2f} GB")
+            print()
+    else:
+        print("No CUDA devices available.")
+
+print_cuda_devices()
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -273,7 +288,7 @@ regnet_feature_size = cifar10_regnet.fc.in_features
 efficientnet_feature_size= cifar10_efficientnet.classifier[1].in_features
 mnas_feature_size=cifar10_mnas05.classifier[1].in_features
 lenet_feature_size=cifar10_lenet.fc.in_features
-
+##################################################################################################################################################
 ##################################################################################################################################################
 # Accuracy metric
 def top_k_accuracy(outputs, labels, k=3):
@@ -295,7 +310,6 @@ def compute_memorization(model, dataloader, mu_c_dict_test):
     global features
     features = FeaturesHook()
     features.clear()
-
     handle_F = select_model(mode)
 
     memorization = 0
@@ -946,7 +960,7 @@ def show_mean_var_relevations(tensor, mode, version, dataset_name,noisy_indices,
     plt.savefig(f'mean_variance_epoch_{len(tensor[0])}_{dict_type}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def show_centroid_distances(weighted_dist, normal_dist, current_epoch,mode,version,dataset_name):
+def show_centroid_distances(weighted_dist, normal_dist,mode,version,dataset_name):
 
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
@@ -954,7 +968,7 @@ def show_centroid_distances(weighted_dist, normal_dist, current_epoch,mode,versi
     # Imposta lo stile di Seaborn
     sns.set(style="whitegrid")
 
-    fig, axs = plt.subplots(2, 5, figsize=(15, 6))  # 2 righe e 5 colonne di grafici
+    fig, axs = plt.subplots(2, 5, figsize=(15, 10))  # 2 righe e 5 colonne di grafici
 
     for i in range(num_classes):
         ax = axs[i // 5, i % 5]  # Seleziona il grafico in base alla classe
@@ -963,16 +977,16 @@ def show_centroid_distances(weighted_dist, normal_dist, current_epoch,mode,versi
         sns.lineplot(x=torch.arange(weighted_dist.size(0)), 
                      y=weighted_dist[:, i].numpy(), 
                      color='green', 
-                     label=f'Weighted centroid distance from clean', 
+                     label=f'W_c', 
                      ax=ax)
         
         sns.lineplot(x=torch.arange(normal_dist.size(0)), 
                      y=normal_dist[:, i].numpy(), 
                      color='red', 
-                     label=f'CB({i})', 
+                     label=f'normal_c({i})', 
                      ax=ax)
         
-        ax.set_title(f'Class {i}: normal centroid vs clean centorid')
+        ax.set_title(f'Class {i}')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Distance')
         ax.legend()
@@ -1016,7 +1030,7 @@ epochs=50
 
 # MSE+WD and low LR 
 criterion= nn.BCEWithLogitsLoss()
-optimizer=optim.Adam(model.parameters(), lr=0.0005, weight_decay=5e-4, betas=(0.9,0.999))
+optimizer=optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4, betas=(0.9,0.999))
 
 info_dict = {
         'NC1': [],
@@ -1067,8 +1081,8 @@ tracking_clean={
 delta_distance_tracker=SampleTracker()
 distance_tracker=SampleTracker()
 
-clean_weighted_centroid_distances = torch.zeros(((num_epochs), num_classes))
-clean_real_centroid_distances = torch.zeros(((num_epochs) , num_classes))
+clean_weighted_centroid_distances = torch.zeros(((epochs), num_classes))
+clean_real_centroid_distances = torch.zeros(((epochs) , num_classes))
 
 
 for i in range(epochs):
@@ -1144,8 +1158,9 @@ for i in range(epochs):
     info_dict['eval_acc'].append(eval_acc)
 
     #Compute distances between computed centroids
-    clean_weighted = torch.norm(A - B, dim=1)  
-    clean_real = torch.norm(C - B, dim=1)  
+    clean_weighted = torch.norm(mu_c_weighted - mu_c_clean, dim=1)  
+    clean_real = torch.norm(mu_c_train - mu_c_clean, dim=1)  
+
     # Store distances at current epoch
     clean_weighted_centroid_distances[i, :] = clean_weighted
     clean_real_centroid_distances[i, :] = clean_real
@@ -1161,11 +1176,11 @@ for i in range(epochs):
         show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
 
         del delta_distances,distances
-
-    if (i+1) % 5 == 0:
-        visualizer = EmbeddingVisualizer2D(model, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
+    '''
+    if (i+1) % 50 == 0:
+        visualizer = EmbeddingVisualizer2D(model,feature_size, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
         visualizer.run()
-
+    '''
 
     torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights.pth')
 
