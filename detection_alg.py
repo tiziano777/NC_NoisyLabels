@@ -611,8 +611,8 @@ delta_distance_tracker=SampleTracker()
 # Algorithm Hyperparameterization
 alpha = 0.03  # Threshold
 noisy_samples = {}
-X = 5
-epochs = 15
+X = 3
+epochs = 25
 num_samples = len(train_dataset)
 noisy_indices = set(list(train_dataset.get_corrupted_indices()))
 
@@ -636,7 +636,7 @@ for iteration in range(X):
 
     # Model parameters
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9,0.999))#, weight_decay=5e-4
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4, betas=(0.9,0.999))
 
     # Configurazione del DataLoader
     trainloader = DataLoader(shuffled_train_dataset, batch_size=256, shuffle=False, num_workers=2, drop_last=False)
