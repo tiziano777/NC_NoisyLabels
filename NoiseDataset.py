@@ -388,7 +388,9 @@ def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
             distances = torch.cdist(class_features, previous_mu_c[c].unsqueeze(0), p=2).squeeze(1)
 
             # Perform Weighting factor using a specific function
-            weights = torch.log(torch.exp(torch.tensor(1.0, device=features.device)) + distances) / 0.43
+            alpha=3
+            beta=0.1
+            weights = torch.exp( distances / alpha) + beta
 
             #Alternative distance metrics:
 
@@ -396,7 +398,7 @@ def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
             #weights = 1 / (distances ** alpha) 
 
             #sigma=1.0
-            #weights = torch.exp(-distances / sigma)
+            #weights = torch.exp( max(distances,4) / sigma)
         
             # Weighted sum
             weighted_sum = (class_features * weights.unsqueeze(1)).sum(dim=0)
@@ -910,7 +912,6 @@ def show_clean_samples(track_samples,mode,version,dataset_name):
     plt.savefig(f'clean_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-
 def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices, dict_type='delta_distance'):
     # Calcola le medie e le varianze per ogni riga (N,)
     means = tensor.mean(dim=1).cpu().numpy()
@@ -1003,7 +1004,7 @@ def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices
     plt.close()
 
 def show_centroid_distances(weighted_dist, normal_dist,mode,version,dataset_name):
-
+    weighted_dist=weighted_dist[5:] # first five elements are huge and hide the visualization around zero values
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
 
@@ -1068,7 +1069,7 @@ model = model.to(device)
 
 ############################################################################
 #define parameters
-epochs=30
+epochs=40
 
 # MSE+WD and low LR 
 criterion= nn.BCEWithLogitsLoss()
@@ -1213,11 +1214,11 @@ for i in range(epochs):
         show_clean_samples(tracking_clean, mode, version, dataset_name)
 
         delta_distances= delta_distance_tracker.tensorize()
-        distances= distance_tracker.tensorize()
+        #distances= distance_tracker.tensorize()
 
         show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
 
-        del delta_distances,distances
+        del delta_distances
         
     '''
     if (i+1) % epochs == 0:
@@ -1235,5 +1236,5 @@ for i in range(epochs):
 
     print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
     
-#show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
+show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
 

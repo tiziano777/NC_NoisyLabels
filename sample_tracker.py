@@ -21,3 +21,6 @@ class SampleTracker:
 
     def get_results(self):
         return self.result_dict
+
+    def reset_dict(self):
+        self.result_dict = {}
