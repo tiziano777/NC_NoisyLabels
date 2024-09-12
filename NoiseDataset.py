@@ -228,18 +228,30 @@ class NoisyLabelsDatasetManager(Dataset):
         matching_data = [self.dataset[i][0] for i in matching_indices]
         matching_fake_labels = self.fake_labels[matching_indices]
         
+        
         non_matching_data = [self.dataset[i][0] for i in non_matching_indices]
         non_matching_fake_labels = self.fake_labels[non_matching_indices]
-        
+        non_matching_real_labels = self.real_labels[non_matching_indices]
+
         # Create combined datasets including data and fake labels
         clean_samples = NoiseDataset(matching_data, matching_fake_labels)
         noisy_labels_samples = NoiseDataset(non_matching_data, non_matching_fake_labels)
+        complete_noisy_labels_samples = NoisyLabelsDataset(non_matching_data, non_matching_real_labels, non_matching_fake_labels)
         
-        return clean_samples, noisy_labels_samples
+        return clean_samples, noisy_labels_samples, complete_noisy_labels_samples
 
     def __len__(self):
         return len(self.dataset)
     
+class NoisySubset(Subset):
+    def __init__(self, dataset, indices):
+        super().__init__(dataset, indices)
+        self.dataset = dataset
+
+    def __getattr__(self, name):
+        # Questo metodo viene chiamato quando cerchi di accedere a un attributo/metodo
+        # che non è definito direttamente in CustomSubset, ma potrebbe esserlo in self.dataset
+        return getattr(self.dataset, name)
 
 """CIFAR-10"""
 
@@ -247,18 +259,18 @@ class NoisyLabelsDatasetManager(Dataset):
 cifar10_trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
 cifar10_testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
 
-# Creazione degli oggetti NoisyLabelsDataset
-cifar10_noisy_trainset = NoisyLabelsDatasetManager(cifar10_trainset, noise_rate=noise_rate)
-
 # Shuffle the trainset
 num_samples = len(cifar10_trainset)
 indices = np.arange(num_samples)
-# Esegui lo shuffle degli indici
 np.random.shuffle(indices)
-cifar10_trainset = Subset(cifar10_trainset, indices)
+shuffled_train_dataset= Subset(cifar10_trainset,indices)
+
+# Creazione degli oggetti NoisyLabelsDataset
+cifar10_noisy_trainset = NoisyLabelsDatasetManager(shuffled_train_dataset, noise_rate=noise_rate)
+
 
 # Configurazione del DataLoader
-cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=256, num_workers=2, drop_last=False)
+cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=256, shuffle=False, num_workers=2, drop_last=False)
 cifar10_testloader = DataLoader(cifar10_testset, batch_size=256, num_workers=2, drop_last=True)
 
 
@@ -288,8 +300,10 @@ regnet_feature_size = cifar10_regnet.fc.in_features
 efficientnet_feature_size= cifar10_efficientnet.classifier[1].in_features
 mnas_feature_size=cifar10_mnas05.classifier[1].in_features
 lenet_feature_size=cifar10_lenet.fc.in_features
+
 ##################################################################################################################################################
 ##################################################################################################################################################
+
 # Accuracy metric
 def top_k_accuracy(outputs, labels, k=3):
 
@@ -357,6 +371,46 @@ def compute_total_memorization(model, dataloader, mu_c_dict_test):
               memorization += distance.item()
             
     return memorization/len(dataloader)
+
+def compute_label_coherence_score(model, mu_c_tensor, dataloader, norm_factor):
+    global features
+    features = FeaturesHook()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    handle_F = select_model(mode)
+    coherence_count=0
+    num_classes = len(mu_c_tensor)
+
+
+    model.eval()
+    for idx, (inputs, targets) in enumerate(dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            fake_targets = targets[:,1:,:].squeeze().to(device)
+            real_targets = targets[:,:1,:].squeeze().to(device)
+            outputs = model(inputs)
+
+            features_batch = features.features_F[-1].squeeze()
+            batch_size=len(features_batch)
+
+            # Reset delle liste di features per il prossimo batch
+            features.features_F = []
+            features.clear()
+
+            distances = torch.cdist(features_batch, mu_c_tensor)  # calcola tensore delle distanze [B,classes]
+            
+            centroid_distance = distances[torch.arange(batch_size), fake_targets]  # take distance from 'fake' label class centoroid
+            real_centroid_distances = distances[torch.arange(batch_size), real_targets] # take distance from real label class centoroid
+            
+            mask = torch.ones(distances.shape, dtype=bool)
+            mask[torch.arange(batch_size), fake_targets] = False  # create a mask for deleting extracted label centroid distances
+            d_remaining = distances[mask].view(batch_size, num_classes-1) # take the rest of distances
+            d_min, _ = torch.min(d_remaining, dim=1)  # find the minimum distance centroid from the remaining ones
+        
+            coherence_count += (d_min == real_centroid_distances).sum().item()
+
+    return coherence_count / norm_factor
+
 
 #Update centorid values over batch
 def compute_mu_c(features, labels, num_classes):
@@ -542,7 +596,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 """Neural Collapse Properties and personalized metrics"""
 
 def compute_delta_distance(mu_c_tensor,features_batch,targets,batch_size):
-    distances = torch.cdist(features_batch, mu_c_tensor)  # calcola tendore delle distanze [B,classes]
+    distances = torch.cdist(features_batch, mu_c_tensor)  # calcola tensore delle distanze [B,classes]
     centroid_distance = distances[torch.arange(batch_size), targets]  # take distance from label class centoroid
     mask = torch.ones(distances.shape, dtype=bool)
     mask[torch.arange(batch_size), targets] = False  # create a mask for deleteing extracted label centroid distances
@@ -688,6 +742,7 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_train):
             near_centroid_dist=min(dist, key=lambda x: dist[x])
 
             distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_train[y_fake.item()]).item() - near_centroid_dist 
+            
             features.clear()
 
     return distance_dict
@@ -1039,6 +1094,28 @@ def show_centroid_distances(weighted_dist, normal_dist,mode,version,dataset_name
     # Salvare il grafico in un file PNG
     plt.savefig(f'centroid_distances_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
 
+def show_noise_coherence(info_dict, mode, version, dataset_name):
+    sns.set_style("whitegrid")  # Stile con griglia bianca
+    sns.set_palette("Set2")  
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10))  
+
+    # Disegna la coerenza sul singolo asse
+    sns.lineplot(x=np.arange(1, len(info_dict['coherence']) + 1),
+                 y=info_dict['coherence'],
+                 ax=ax,  
+                 marker="o",
+                 linewidth=2,
+                 color='blue',
+                 label='Coherence')
+
+    ax.set_title(f'Coherence Metric of noisy samples')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('percentage of sample coherent with real label')
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(f'coherence_epoch_{len(info_dict["coherence"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+
 ##################################################################################################################################################
 #define dataset, model, its version
 dataset_name='cifar10'
@@ -1073,7 +1150,7 @@ epochs=40
 
 # MSE+WD and low LR 
 criterion= nn.BCEWithLogitsLoss()
-optimizer=optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4, betas=(0.9,0.999))
+optimizer=optim.Adam(model.parameters(), lr=0.001,  betas=(0.9,0.999)) # weight_decay=5e-4,
 
 info_dict = {
         'NC1': [],
@@ -1086,6 +1163,7 @@ info_dict = {
         'mu_c_train':[],
         'mu_c_weighted':[],
         'mu_c_clean':[],
+        'coherence':[],
         #'clean_mem':[],
         #'fake_mem':[],
 }
@@ -1164,10 +1242,15 @@ for i in range(epochs):
     #memorization= compute_total_memorization(model, trainloader, mu_c_test)
     
     # Divide dataset between real and fake samples
-    clean_labels_dataset, noisy_labels_dataset= train_dataset.divide_samples()
+    clean_labels_dataset, noisy_labels_dataset, complete_noisy_labels_dataset = train_dataset.divide_samples()
     clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
     noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    complete_noisy_dataloader = DataLoader(complete_noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
 
+    norm_factor=len(complete_noisy_labels_dataset)
+    label_coherence_score = compute_label_coherence_score(model, mu_c_train, complete_noisy_dataloader, norm_factor)
+
+    
     # Noise Memorization
     #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_test)
     # Real labels Memorization
@@ -1192,6 +1275,7 @@ for i in range(epochs):
     info_dict['mu_c_train'].append(mu_c_train)
     info_dict['mu_c_weighted'].append(mu_c_weighted)
     info_dict['mu_c_clean'].append(mu_c_clean)
+    info_dict['coherence'].append(label_coherence_score)
     #info_dict['mem'].append(memorization)
     #info_dict['clean_mem'].append(clean_label_memorization)
     #info_dict['fake_mem'].append(noise_label_memorization)
@@ -1217,7 +1301,7 @@ for i in range(epochs):
         #distances= distance_tracker.tensorize()
 
         show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
-
+        show_noise_coherence(info_dict, mode, version,dataset_name)
         del delta_distances
         
     '''
@@ -1234,7 +1318,7 @@ for i in range(epochs):
     with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track.pkl', 'wb') as f:
         pickle.dump(tracking_noise, f)
 
-    print('[epoch:'+ str(i + 1) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
-    
+    print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} | coherence:{label_coherence_score:.4f}]')
+
 show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
 

@@ -612,7 +612,7 @@ delta_distance_tracker=SampleTracker()
 alpha = 0.03  # Threshold
 noisy_samples = {}
 X = 3
-epochs = 25
+epochs = 20
 num_samples = len(train_dataset)
 noisy_indices = set(list(train_dataset.get_corrupted_indices()))
 
@@ -652,8 +652,10 @@ for iteration in range(X):
 
         print('[model: '+str(iteration+1)+'/'+str(X)+' epoch:'+ str(epoch + 1)+'/'+str(epochs) +' | train top1:' + str(train_acc) +' | eval acc:' + str(eval_acc) +' | NC1:' + str(collapse_metric))
 
+
     # Calcola le distanze medie per ogni campione lungo le epoche
     delta_distances = delta_distance_tracker.tensorize()  # Tensor (N_samples, n_epochs)
+    show_mean_var_relevations(delta_distances, mode, version, dataset_name, train_dataset.get_corrupted_indices(), index_map)
     delta_distance_tracker.reset_dict() # reset dict for next iteration
 
     means = delta_distances.mean(dim=1)  # Manteniamo il tutto come tensore di PyTorch (N_samples)
