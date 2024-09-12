@@ -183,14 +183,15 @@ class NoisyLabelsDatasetManager(Dataset):
     def get_corrupted_indices(self):
         return self.corrupted_indices
     
-    def take_first_n_noise_samples(self, n):
-        # Calcola gli indici dei campioni in cui l'etichetta reale non corrisponde all'etichetta falsa
-        matching_indices = np.where(self.real_labels != self.fake_labels)[0][:n]
+    def take_random_n_noise_samples(self, n):
+        # Seleziona casualmente n campioni in cui l'etichetta reale non corrisponde a quella falsa
+        matching_indices = np.where(self.real_labels != self.fake_labels)[0]
+        selected_indices = np.random.choice(matching_indices, size=n, replace=False)
         
         # Prepara i dati e le etichette per i campioni selezionati
-        selected_data = [self.dataset[i][0] for i in matching_indices]
-        selected_real_labels = self.real_labels[matching_indices]
-        selected_fake_labels = self.fake_labels[matching_indices]
+        selected_data = [self.dataset[i][0] for i in selected_indices]
+        selected_real_labels = self.real_labels[selected_indices]
+        selected_fake_labels = self.fake_labels[selected_indices]
         
         # Converte le etichette in tensori di PyTorch
         selected_real_labels_tensor = torch.tensor(selected_real_labels, dtype=torch.long)
@@ -201,14 +202,15 @@ class NoisyLabelsDatasetManager(Dataset):
         
         return selected_dataset
     
-    def take_first_n_clean_samples(self, n):
-        # Calcola gli indici dei campioni in cui l'etichetta reale non corrisponde all'etichetta falsa
-        matching_indices = np.where(self.real_labels == self.fake_labels)[0][:n]
+    def take_random_n_clean_samples(self, n):
+        # Seleziona casualmente n campioni in cui l'etichetta reale corrisponde a quella falsa
+        matching_indices = np.where(self.real_labels == self.fake_labels)[0]
+        selected_indices = np.random.choice(matching_indices, size=n, replace=False)
         
         # Prepara i dati e le etichette per i campioni selezionati
-        selected_data = [self.dataset[i][0] for i in matching_indices]
-        selected_real_labels = self.real_labels[matching_indices]
-        selected_fake_labels = self.fake_labels[matching_indices]
+        selected_data = [self.dataset[i][0] for i in selected_indices]
+        selected_real_labels = self.real_labels[selected_indices]
+        selected_fake_labels = self.fake_labels[selected_indices]
         
         # Converte le etichette in tensori di PyTorch
         selected_real_labels_tensor = torch.tensor(selected_real_labels, dtype=torch.long)
@@ -218,7 +220,7 @@ class NoisyLabelsDatasetManager(Dataset):
         selected_dataset = NoisyLabelsDataset(dataset=selected_data, real_labels=selected_real_labels_tensor, fake_labels=selected_fake_labels_tensor)
         
         return selected_dataset
-
+    
     def divide_samples(self):
         # Split the dataset into two: one where real_label == fake_label and another where they don't match
         matching_indices = np.where(self.real_labels == self.fake_labels)[0]
@@ -408,6 +410,58 @@ def compute_label_coherence_score(model, mu_c_tensor, dataloader, norm_factor):
             d_min, _ = torch.min(d_remaining, dim=1)  # find the minimum distance centroid from the remaining ones
         
             coherence_count += (d_min == real_centroid_distances).sum().item()
+
+    return coherence_count / norm_factor
+
+def compute_label_coherence_for_noisy_outliers(model, mu_c_tensor, dataloader):
+    global features
+    features = FeaturesHook()
+
+    # Aggiungi l'hook al penultimo layer del modello
+    handle_F = select_model(mode)
+    coherence_count=0
+    num_classes = len(mu_c_tensor)
+    norm_factor=0
+
+    model.eval()
+    for idx, (inputs, targets) in enumerate(dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            fake_targets = targets[:,1:,:].squeeze().to(device)
+            real_targets = targets[:,:1,:].squeeze().to(device)
+            outputs = model(inputs)
+
+            features_batch = features.features_F[-1].squeeze()
+            batch_size=len(features_batch)
+
+            # Reset delle liste di features per il prossimo batch
+            features.features_F = []
+            features.clear()
+
+            distances = torch.cdist(features_batch, mu_c_tensor)  # calcola tensore delle distanze [B,classes]
+            
+            centroid_distance = distances[torch.arange(batch_size), fake_targets]  # take distance from 'fake' label class centoroid
+            real_centroid_distances = distances[torch.arange(batch_size), real_targets] # take distance from real label class centoroid
+            
+            mask = torch.ones(distances.shape, dtype=bool)
+            mask[torch.arange(batch_size), fake_targets] = False  # create a mask for deleting extracted label centroid distances
+            d_remaining = distances[mask].view(batch_size, num_classes-1) # take the rest of distances
+            d_min, _ = torch.min(d_remaining, dim=1)  # find the minimum distance centroid from the remaining ones
+
+            distance_batch= d_min - centroid_distance
+
+            # Select only samples where the difference is greater than 0
+            valid_samples_mask = distance_batch < 0
+            valid_real_centroid_distances = real_centroid_distances[valid_samples_mask]
+
+            # Update the coherence count by comparing real centroid distances with the minimum distances
+            coherence_count += (d_min[valid_samples_mask] == valid_real_centroid_distances).sum().item()
+
+            # Update the normalization factor based on the number of valid samples
+            norm_factor += valid_samples_mask.sum().item()
+
+    # Return the coherence count normalized by the number of valid samples
+    return coherence_count / norm_factor if norm_factor > 0 else 0
 
     return coherence_count / norm_factor
 
@@ -719,7 +773,7 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_train):
     handle_F = select_model(mode)
     
     # Take first n noisy samples from trainining dataset
-    tracked_noise_samples= train_dataset.take_first_n_noise_samples(n)
+    tracked_noise_samples= train_dataset.take_random_n_noise_samples(n)
     tracked_noise_samples_loader=DataLoader(tracked_noise_samples, batch_size=1, num_workers=2)
 
     # foreach sample take its features and compute relative distance ( real - fake )
@@ -741,7 +795,7 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_train):
                 dist[i]=torch.dist(current_features_F,mu_c_train[i]).item()
             near_centroid_dist=min(dist, key=lambda x: dist[x])
 
-            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_train[y_fake.item()]).item() - near_centroid_dist 
+            distance_dict[str(idx)] = near_centroid_dist - torch.dist(current_features_F,mu_c_train[y_fake.item()]).item()
             
             features.clear()
 
@@ -763,7 +817,7 @@ def get_distance_n_samples(n,model,train_dataset, mu_c_train):
     handle_F = select_model(mode)
     
     # Take first n noisy samples from trainining dataset
-    tracked_clean_samples= train_dataset.take_first_n_clean_samples(n)
+    tracked_clean_samples= train_dataset.take_random_n_clean_samples(n)
     tracked_clean_samples_loader=DataLoader(tracked_clean_samples, batch_size=1, num_workers=2)
 
     # foreach sample take its features and compute relative distance ( real - fake )
@@ -774,7 +828,7 @@ def get_distance_n_samples(n,model,train_dataset, mu_c_train):
             y_real = targets[:,:1,:].squeeze().to(device)
             y_fake = targets[:,1:,:].squeeze().to(device)
             if y_fake != y_real:
-                raise ValueError("Bad extraction in  'take_first_n_clean_samples' function")
+                raise ValueError("Bad extraction in  'take_random_n_clean_samples' function")
             inputs = inputs.to(device)
             outputs = model(inputs)
             current_features_F = features.features_F[-1].squeeze()
@@ -785,7 +839,7 @@ def get_distance_n_samples(n,model,train_dataset, mu_c_train):
                 dist[i]=torch.dist(current_features_F,mu_c_train[i]).item()
             near_centroid_dist=min(dist, key=lambda x: dist[x])
 
-            distance_dict[str(idx)]=  torch.dist(current_features_F,mu_c_train[y_real.item()]).item() - near_centroid_dist
+            distance_dict[str(idx)]=  near_centroid_dist - torch.dist(current_features_F,mu_c_train[y_real.item()]).item()
             features.clear()
 
     return distance_dict
@@ -1096,25 +1150,38 @@ def show_centroid_distances(weighted_dist, normal_dist,mode,version,dataset_name
 
 def show_noise_coherence(info_dict, mode, version, dataset_name):
     sns.set_style("whitegrid")  # Stile con griglia bianca
-    sns.set_palette("Set2")  
-    fig, ax = plt.subplots(1, 1, figsize=(12, 10))  
+    sns.set_palette("Set2")  # Set palette per i colori
 
-    # Disegna la coerenza sul singolo asse
+    plt.figure(figsize=(10, 6))  # Definisci una figura di dimensioni appropriate
+
+    # Linea per la coerenza dei campioni rumorosi
     sns.lineplot(x=np.arange(1, len(info_dict['coherence']) + 1),
                  y=info_dict['coherence'],
-                 ax=ax,  
                  marker="o",
                  linewidth=2,
                  color='blue',
                  label='Coherence')
 
-    ax.set_title(f'Coherence Metric of noisy samples')
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('percentage of sample coherent with real label')
-    ax.legend()
+    # Linea per la coerenza degli outliers rumorosi
+    sns.lineplot(x=np.arange(1, len(info_dict['outliers_coherence']) + 1),
+                 y=info_dict['outliers_coherence'],
+                 marker="o",
+                 linewidth=2,
+                 color='red',
+                 label='Outliers Coherence')
 
+    # Imposta titolo, etichette e legenda
+    plt.title(f'Coherence Metrics for Noisy Samples and Outliers')
+    plt.xlabel('Epoch')
+    plt.ylabel('% Sample Coherent with Real Label')
+    plt.legend()
+
+    # Salva il grafico in un file PNG
     plt.tight_layout()
     plt.savefig(f'coherence_epoch_{len(info_dict["coherence"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+
+    # Chiudi la figura per liberare memoria
+    plt.close()
 
 ##################################################################################################################################################
 #define dataset, model, its version
@@ -1164,6 +1231,7 @@ info_dict = {
         'mu_c_weighted':[],
         'mu_c_clean':[],
         'coherence':[],
+        'outliers_coherence':[],
         #'clean_mem':[],
         #'fake_mem':[],
 }
@@ -1249,7 +1317,7 @@ for i in range(epochs):
 
     norm_factor=len(complete_noisy_labels_dataset)
     label_coherence_score = compute_label_coherence_score(model, mu_c_train, complete_noisy_dataloader, norm_factor)
-
+    label_coherence_of_nearest_centroid = compute_label_coherence_for_noisy_outliers(model, mu_c_train, complete_noisy_dataloader)
     
     # Noise Memorization
     #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_test)
@@ -1276,6 +1344,7 @@ for i in range(epochs):
     info_dict['mu_c_weighted'].append(mu_c_weighted)
     info_dict['mu_c_clean'].append(mu_c_clean)
     info_dict['coherence'].append(label_coherence_score)
+    info_dict['outliers_coherence'].append(label_coherence_of_nearest_centroid)
     #info_dict['mem'].append(memorization)
     #info_dict['clean_mem'].append(clean_label_memorization)
     #info_dict['fake_mem'].append(noise_label_memorization)
