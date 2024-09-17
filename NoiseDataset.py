@@ -305,6 +305,18 @@ lenet_feature_size=cifar10_lenet.fc.in_features
 
 ##################################################################################################################################################
 ##################################################################################################################################################
+# label Smoothing
+def label_smoothing(targets, num_classes, smoothing=0.1):
+    # Calculate the smoothing value for each class
+    smoothing_value = smoothing / (num_classes - 1)
+    
+    # Create a one-hot encoded version of the targets
+    one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
+    
+    # Apply label smoothing
+    smooth_targets = one_hot_targets * (1 - smoothing) + smoothing_value
+    
+    return smooth_targets
 
 # Accuracy metric
 def top_k_accuracy(outputs, labels, k=3):
@@ -542,7 +554,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
     model.train()
     for idx, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)
-            targets = labels[:,1:,:].squeeze().to(device) # take only corrupted labels
+            targets = labels[:,1:,:].squeeze().to(device) # take corrupted labels (training labels)
             real_targets = labels[:,:1,:].squeeze().to(device) #take true labels, useful to create clean centroids.
             optimizer.zero_grad()
             outputs = model(inputs).logits
@@ -551,8 +563,9 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
             # Reset delle liste di features per il prossimo batch
             features.clear()
 
-            # Update network
-            one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
+            # Update network (one hot function or label smoothing function)
+            #one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
+            one_hot_targets = label_smoothing(targets, num_classes=num_classes).float()
             loss = criterion(outputs, one_hot_targets)
             loss.backward()
             optimizer.step()
@@ -1215,7 +1228,7 @@ model = model.to(device)
 #define parameters
 epochs=40
 
-# MSE+WD and low LR 
+# BCE loss
 criterion= nn.BCEWithLogitsLoss()
 optimizer=optim.Adam(model.parameters(), lr=0.001,  betas=(0.9,0.999)) # weight_decay=5e-4,
 
@@ -1334,7 +1347,7 @@ for i in range(epochs):
     for key, v in features_distance_items.items():
         tracking_clean[key].append(v)
 
-################################################################################
+    ################################################################################
     #Store NC properties
     info_dict['NC1'].append(collapse_metric)
     info_dict['NC2'].append(ETF_metric)
