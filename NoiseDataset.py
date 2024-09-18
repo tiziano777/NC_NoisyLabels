@@ -14,6 +14,7 @@ import torchvision.datasets as datasets
 
 from Hooks import FeaturesHook
 from sample_tracker import SampleTracker
+from sample_label_tracker import SampleLabelTracker
 from tsne import EmbeddingVisualizer2D
 
 import seaborn as sns
@@ -318,6 +319,55 @@ def label_smoothing(targets, num_classes, smoothing=0.1):
     
     return smooth_targets
 
+#early learning based label smoothing
+def early_learning_label_smoothing(distances, dataloader, alpha=1.0):
+    """
+    :param distances: Tensor(N, classes) of distances between samples and cantroids in feature space
+    :param labels: Tensor (N,) with training labels
+    :param alpha: Temperature (try with higher than 1.0)
+    :return: Tensor (N, 10) of of probabilities after label smoothing
+    """
+
+    N, num_classes = distances.shape
+    batch_size=dataloader.batch_size
+
+    # output labels
+    smoothed_probs = torch.zeros_like(distances)  # Inizializza il tensore per le probabilità smussate
+    
+    #Hook to penultimate feature layer
+    global features
+    features = FeaturesHook()
+    handle_F = select_model(mode)
+
+    model.eval()
+    for idx, (inputs, targets) in enumerate(dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            targets = targets[:,1:,:].squeeze().to(device)
+            outputs = model(inputs)
+
+            current_features_F = features.features_F[-1].squeeze()
+            current_batch_size=len(current_features_F)
+
+            # Reset delle liste di features per il prossimo batch
+            features.features_F = []
+            features.clear()
+
+            # take index to store values
+            start_idx = idx * batch_size
+            end_idx = start_idx + current_batch_size
+            d_i = distances[start_idx:end_idx]  
+            
+            # exponential probabilities in softmax fashion
+            exp_d = torch.exp(-alpha * d_i)  
+            smoothed_batch_probs = exp_d / exp_d.sum(dim=1, keepdim=True)  
+            
+            # Label smoothing
+            smoothed_probs[start_idx:end_idx] = smoothed_batch_probs
+
+    return smoothed_probs  
+
+
 # Accuracy metric
 def top_k_accuracy(outputs, labels, k=3):
 
@@ -420,7 +470,8 @@ def compute_label_coherence_score(model, mu_c_tensor, dataloader, norm_factor):
             mask[torch.arange(batch_size), fake_targets] = False  # create a mask for deleting extracted label centroid distances
             d_remaining = distances[mask].view(batch_size, num_classes-1) # take the rest of distances
             d_min, _ = torch.min(d_remaining, dim=1)  # find the minimum distance centroid from the remaining ones
-        
+
+            # take only the points that have as minimum distance centroid the reaòl label centroid
             coherence_count += (d_min == real_centroid_distances).sum().item()
 
     return coherence_count / norm_factor
@@ -530,7 +581,7 @@ def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
     return weighted_mu_c_batch, counter
 
 @measure_time
-def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_classes, feature_size, mode='resnet'):
+def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer, criterion, num_classes, feature_size, mode='resnet'):
     global features
     features = FeaturesHook()
     features.clear()
@@ -549,6 +600,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
     test_counter= torch.zeros(num_classes, dtype=torch.int32, device=device)
 
     top1 = []
+    noisy_top1=[]
     eval_top1 = []
 
     model.train()
@@ -598,6 +650,19 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
           mu_c[k] /= counter[k] 
           mu_c_clean[k] /= clean_counter[k] 
     
+    # Collect performance on noisy samples
+    noisy_dataset=NoisySubset(dataloader.dataset,noisy_indices)
+    noisy_dataloader=DataLoader(noisy_dataset, batch_size=256, shuffle=False, num_workers=2, drop_last=False)
+    model.eval()
+    for idx, (inputs, labels) in enumerate(noisy_dataloader):
+        with torch.no_grad():
+            inputs = inputs.to(device)
+            targets = labels[:,1:,:].squeeze().to(device) # take corrupted labels 
+            outputs = model(inputs)
+
+            noisy_prec1 = top_k_accuracy(outputs,targets ,1)
+            noisy_top1.append(noisy_prec1)
+            
     # perform centroid by weight sample based on distance on mu_c normal centroids
     model.eval()
     for idx, (inputs, labels) in enumerate(dataloader):
@@ -658,7 +723,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
     handle_F.remove()
     
-    return mu_G, mu_c, mu_c_clean, mu_c_weighted, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), nc4_ratio, mu_c_test
+    return mu_G, mu_c, mu_c_clean, mu_c_weighted, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), sum(noisy_top1)/len(noisy_top1), nc4_ratio, mu_c_test
 
 """Neural Collapse Properties and personalized metrics"""
 
@@ -676,7 +741,7 @@ def compute_delta_distance(mu_c_tensor,features_batch,targets,batch_size):
 
 # NC1 (sigmaW)
 @measure_time
-def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader,delta_distance_tracker,distance_tracker, mode='resnet'):
+def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader,delta_distance_tracker, distance_tracker, early_learning_tracker, early_learning, mode='resnet'):
     global features
     features = FeaturesHook()
 
@@ -712,6 +777,10 @@ def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader,delta_distance_t
             distances = torch.cdist(current_features_F, mu_c_tensor)  # calcola tensore delle distanze [B,classes]
             centroid_distance = distances[torch.arange(batch_size), targets]  # take distance from label class centroid
             distance_tracker.add_epoch_results(idx,centroid_distance)
+
+            # Early learning algorithm
+            if early_learning:
+                early_learning_tracker.add_epoch_results(idx,distances)
 
             del inputs, outputs, current_features_F
 
@@ -872,8 +941,16 @@ def show_plot(info_dict, mode, version, dataset_name):
                  ax=axs[0, 0],
                  marker="o",
                  linewidth=2,
-                 color='blue',
+                 color='green',
                  label='Train Accuracy')  
+
+    sns.lineplot(x=np.arange(1, len(info_dict['noisy_acc']) + 1),
+                 y=info_dict['noisy_acc'],
+                 ax=axs[0, 0],
+                 marker="o",
+                 linewidth=2,
+                 color='red',
+                 label='Noisy Accuracy')  
 
     sns.lineplot(x=np.arange(1, len(info_dict['eval_acc']) + 1),
              y=info_dict['eval_acc'],
@@ -1240,6 +1317,7 @@ info_dict = {
         'mem': [],
         'train_acc': [],
         'eval_acc': [],
+        'noisy_acc':[],
         'mu_c_train':[],
         'mu_c_weighted':[],
         'mu_c_clean':[],
@@ -1283,6 +1361,13 @@ tracking_clean={
 delta_distance_tracker=SampleTracker()
 distance_tracker=SampleTracker()
 
+# variables to exploit early learning coherence
+early_learning_tracker=SampleLabelTracker()
+best_eval_accuracy=0
+coherence_epoch=-1
+early_learning=True
+new_fake_labels=[]
+
 clean_weighted_centroid_distances = torch.zeros(((epochs), num_classes))
 clean_real_centroid_distances = torch.zeros(((epochs) , num_classes))
 
@@ -1291,12 +1376,23 @@ for i in range(epochs):
     #TRAIN MODEL at current epoch
 
     #Evaluate NC properties at current epoch
-    mu_G_train, mu_c_train, mu_c_clean, mu_c_weighted, train_acc, eval_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, feature_size, mode=mode)
+    mu_G_train, mu_c_train, mu_c_clean, mu_c_weighted, train_acc, eval_acc, noise_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, cifar10_noisy_trainset.get_corrupted_indices(), optimizer, criterion, num_classes, feature_size, mode=mode)
 
     #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
-    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker, mode=mode)
+    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker,early_learning_tracker, early_learning, mode=mode)
     Sigma_B = compute_Sigma_B(mu_c_train, mu_G_train)
     collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_train))
+    
+    # Early learning coherence exploitation
+    if (best_eval_accuracy+0.01) < eval_acc and early_learning:
+        best_eval_accuracy = eval_acc
+        coherence_epoch+=1
+    else:
+        label_smooth_ref=early_learning_tracker.extract_epoch(coherence_epoch)
+        print('early learning references found, going to late separation phase...')
+        print(label_smooth_ref.shape)
+        early_learning=False
+        new_fake_labels= early_learning_label_smoothing(label_smooth_ref,trainloader)
 
     #NC2
     if resnet:
@@ -1365,6 +1461,7 @@ for i in range(epochs):
     #Store accuracies
     info_dict['train_acc'].append(train_acc)
     info_dict['eval_acc'].append(eval_acc)
+    info_dict['noisy_acc'].append(noise_acc)
 
     #Compute distances between computed centroids
     clean_weighted = torch.norm(mu_c_weighted - mu_c_clean, dim=1)  
@@ -1403,4 +1500,9 @@ for i in range(epochs):
     print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} | coherence:{label_coherence_score:.4f}]')
 
 show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
+
+print('Application of early learning coherence and late separation phenomenon')
+print('Use label smoothing from early learning embeddings, that have higher correlation scores with the real labels in terms of distance in feature space')
+print('Use robust loss using a rescaled BCE with Sigmoid-based weighted, using by relative distance metric to force real labels to be closer its centorid and move noise far as possible from its fake centroid, and enhance separability.')
+
 
