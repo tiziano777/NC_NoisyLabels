@@ -15,6 +15,8 @@ import torchvision.datasets as datasets
 from Hooks import FeaturesHook
 from sample_tracker import SampleTracker
 from sample_label_tracker import SampleLabelTracker
+from SigmoidWeightedBCE import SigmoidWeightingBCELoss
+from noisy_dataset_classes import NoiseDataset, NoisyLabelsDatasetManager, NoisyLabelsDataset, NoisySubset
 from tsne import EmbeddingVisualizer2D
 
 import seaborn as sns
@@ -96,165 +98,6 @@ transform = transforms.Compose(
 
 # Definizione del tasso di rumore
 noise_rate = 0.10
-
-# Class to store data with only fake labels
-class NoiseDataset(Dataset):
-    def __init__(self, data, fake_labels):
-        self.data = data
-        self.fake_labels = fake_labels
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        data = self.data[idx]
-        fake_label = self.fake_labels[idx]
-        return data, fake_label
-
-#class to store data with fake/clean labels
-class NoisyLabelsDataset(Dataset):
-    def __init__(self, dataset, real_labels, fake_labels):
-        self.dataset = dataset
-        
-        # Inizializziamo le etichette reali e fake con le etichette originali del dataset
-        self.real_labels = real_labels
-        self.fake_labels = fake_labels
-
-    
-    def __getitem__(self, index):
-        x = self.dataset[index]  # Ignoriamo l'etichetta reale dal dataset originale
-        real_y = self.real_labels[index]  # Etichetta reale
-        fake_y = self.fake_labels[index]  # Etichetta corrotta (fake)
-        
-        # Concateniamo verticalmente l'etichetta reale e quella fake per formare un array di output
-        y_output = np.vstack((real_y, fake_y))
-        
-        return x, y_output
-
-    def get_fake_labels(self):
-        return self.real_labels
-    
-    def get_clean_labels(self):
-        return self.fake_labels
-    
-    def __len__(self):
-        return len(self.dataset)
-    
-# Class to manage both clean/fake labels   
-class NoisyLabelsDatasetManager(Dataset):
-    def __init__(self, dataset, noise_rate, random_state=1):
-        self.dataset = dataset
-        self.noise_rate = noise_rate
-        self.random_state = random_state
-        np.random.seed(self.random_state)
-        
-        # Inizializziamo le etichette reali e fake con le etichette originali del dataset
-        self.real_labels = np.array([self.dataset[i][1] for i in range(len(dataset))])
-        self.fake_labels = self.real_labels.copy()
-        
-        # Applichiamo il rumore alle etichette fake
-        
-        num_samples = len(self.dataset)
-        num_corrupted = int(self.noise_rate * num_samples)
-        self.corrupted_indices = np.random.choice(num_samples, size=num_corrupted, replace=False)
-        self.inject_noise()
-
-    def inject_noise(self):
-        for idx in self.corrupted_indices:
-            # Generiamo un'etichetta fake per 10 classi
-            noisy_label = np.random.randint(0, 10)
-            self.fake_labels[idx] = noisy_label
-
-    def __getitem__(self, index):
-        x, _ = self.dataset[index]  # Ignoriamo l'etichetta reale dal dataset originale
-        real_y = self.real_labels[index]  # Etichetta reale
-        fake_y = self.fake_labels[index]  # Etichetta corrotta (fake)
-        
-        # Concateniamo verticalmente l'etichetta reale e quella fake per formare un array di output
-        y_output = np.vstack((real_y, fake_y))
-        
-        return x, y_output
-
-    def get_fake_labels(self):
-        return self.real_labels
-    
-    def get_clean_labels(self):
-        return self.fake_labels
-    
-    def get_corrupted_indices(self):
-        return self.corrupted_indices
-    
-    def take_random_n_noise_samples(self, n):
-        # Seleziona casualmente n campioni in cui l'etichetta reale non corrisponde a quella falsa
-        matching_indices = np.where(self.real_labels != self.fake_labels)[0]
-        selected_indices = np.random.choice(matching_indices, size=n, replace=False)
-        
-        # Prepara i dati e le etichette per i campioni selezionati
-        selected_data = [self.dataset[i][0] for i in selected_indices]
-        selected_real_labels = self.real_labels[selected_indices]
-        selected_fake_labels = self.fake_labels[selected_indices]
-        
-        # Converte le etichette in tensori di PyTorch
-        selected_real_labels_tensor = torch.tensor(selected_real_labels, dtype=torch.long)
-        selected_fake_labels_tensor = torch.tensor(selected_fake_labels, dtype=torch.long)
-        
-        # Crea un nuovo dataset con i campioni selezionati e le etichette concatenate
-        selected_dataset = NoisyLabelsDataset(dataset=selected_data, real_labels=selected_real_labels_tensor, fake_labels=selected_fake_labels_tensor)
-        
-        return selected_dataset
-    
-    def take_random_n_clean_samples(self, n):
-        # Seleziona casualmente n campioni in cui l'etichetta reale corrisponde a quella falsa
-        matching_indices = np.where(self.real_labels == self.fake_labels)[0]
-        selected_indices = np.random.choice(matching_indices, size=n, replace=False)
-        
-        # Prepara i dati e le etichette per i campioni selezionati
-        selected_data = [self.dataset[i][0] for i in selected_indices]
-        selected_real_labels = self.real_labels[selected_indices]
-        selected_fake_labels = self.fake_labels[selected_indices]
-        
-        # Converte le etichette in tensori di PyTorch
-        selected_real_labels_tensor = torch.tensor(selected_real_labels, dtype=torch.long)
-        selected_fake_labels_tensor = torch.tensor(selected_fake_labels, dtype=torch.long)
-        
-        # Crea un nuovo dataset con i campioni selezionati e le etichette concatenate
-        selected_dataset = NoisyLabelsDataset(dataset=selected_data, real_labels=selected_real_labels_tensor, fake_labels=selected_fake_labels_tensor)
-        
-        return selected_dataset
-    
-    def divide_samples(self):
-        # Split the dataset into two: one where real_label == fake_label and another where they don't match
-        matching_indices = np.where(self.real_labels == self.fake_labels)[0]
-        non_matching_indices = np.where(self.real_labels != self.fake_labels)[0]
-        
-        # Extract data and fake labels for matching and non-matching cases
-        matching_data = [self.dataset[i][0] for i in matching_indices]
-        matching_fake_labels = self.fake_labels[matching_indices]
-        
-        
-        non_matching_data = [self.dataset[i][0] for i in non_matching_indices]
-        non_matching_fake_labels = self.fake_labels[non_matching_indices]
-        non_matching_real_labels = self.real_labels[non_matching_indices]
-
-        # Create combined datasets including data and fake labels
-        clean_samples = NoiseDataset(matching_data, matching_fake_labels)
-        noisy_labels_samples = NoiseDataset(non_matching_data, non_matching_fake_labels)
-        complete_noisy_labels_samples = NoisyLabelsDataset(non_matching_data, non_matching_real_labels, non_matching_fake_labels)
-        
-        return clean_samples, noisy_labels_samples, complete_noisy_labels_samples
-
-    def __len__(self):
-        return len(self.dataset)
-    
-class NoisySubset(Subset):
-    def __init__(self, dataset, indices):
-        super().__init__(dataset, indices)
-        self.dataset = dataset
-
-    def __getattr__(self, name):
-        # Questo metodo viene chiamato quando cerchi di accedere a un attributo/metodo
-        # che non è definito direttamente in CustomSubset, ma potrebbe esserlo in self.dataset
-        return getattr(self.dataset, name)
 
 """CIFAR-10"""
 
@@ -382,60 +225,7 @@ def top_k_accuracy(outputs, labels, k=3):
 
     return top_k_acc
 
-# MEMORIZATION METRICS
-
-def compute_memorization(model, dataloader, mu_c_dict_test):
-    global features
-    features = FeaturesHook()
-    features.clear()
-    handle_F = select_model(mode)
-
-    memorization = 0
-    model.eval()
-    for idx, (inputs, targets) in enumerate(dataloader):
-        with torch.no_grad():
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            outputs = model(inputs)
-            current_features_F = features.features_F[-1].squeeze()
-
-            # Reset delle liste di features per il prossimo batch
-            features.clear()
-            # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi
-            for b, features_sample in enumerate(current_features_F):
-              y = targets[b].item()
-              distance = torch.dist(features_sample, mu_c_dict_test[y])
-              memorization += distance.item()
-            
-    return memorization/len(dataloader)
-
-def compute_total_memorization(model, dataloader, mu_c_dict_test):
-    global features
-    features = FeaturesHook()
-    features.clear()
-
-    # Aggiungi l'hook al penultimo layer del modello
-    handle_F = select_model(mode)
-
-    memorization = 0
-    model.eval()
-    for idx, (inputs, targets) in enumerate(dataloader):
-        with torch.no_grad():
-            inputs = inputs.to(device)
-            targets = targets[:,1:,:].squeeze().to(device)
-            outputs = model(inputs)
-            current_features_F = features.features_F[-1].squeeze()
-
-            # Reset delle liste di features per il prossimo batch
-            features.clear()
-            # Itera sul tensore delle feature per gestire singoli campioni e aggiornare la media delle classi
-            for b, features_sample in enumerate(current_features_F):
-              y = targets[b].item()
-              distance = torch.dist(features_sample, mu_c_dict_test[y])
-              memorization += distance.item()
-            
-    return memorization/len(dataloader)
-
+# Coherence score for noisy samples
 def compute_label_coherence_score(model, mu_c_tensor, dataloader, norm_factor):
     global features
     features = FeaturesHook()
@@ -543,43 +333,6 @@ def compute_mu_c(features, labels, num_classes):
     
     return mu_c, counter
 
-def compute_weighted_mu_c(features, labels, num_classes, previous_mu_c):
-    # Inizializza i tensori di output
-    weighted_mu_c_batch = torch.zeros((num_classes, features.size(1)), dtype=features.dtype, device=features.device)
-    counter = torch.zeros(num_classes, dtype=torch.int32, device=features.device)
-    
-    # Itera su ogni classe e somma le feature corrispondenti
-    for c in range(num_classes):
-        mask = (labels == c)
-        # class projection
-        class_features = features[mask]
-        
-        if class_features.size(0) > 0:
-            # Perform Distance(mu_c[c],F_i[c]) for every sample i in batch_size
-            distances = torch.cdist(class_features, previous_mu_c[c].unsqueeze(0), p=2).squeeze(1)
-
-            # Perform Weighting factor using a specific function
-            alpha=3
-            beta=0.1
-            weights = torch.exp( distances / alpha) + beta
-
-            #Alternative distance metrics:
-
-            #alpha=2.0
-            #weights = 1 / (distances ** alpha) 
-
-            #sigma=1.0
-            #weights = torch.exp( max(distances,4) / sigma)
-        
-            # Weighted sum
-            weighted_sum = (class_features * weights.unsqueeze(1)).sum(dim=0)
-            # Update centroid 
-            weighted_mu_c_batch[c] = weighted_sum
-            # Update count for normalization factor
-            counter[c] = len(class_features)
-
-    return weighted_mu_c_batch, counter
-
 @measure_time
 def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer, criterion, num_classes, feature_size, mode='resnet'):
     global features
@@ -591,12 +344,8 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
     mu_c = torch.zeros((num_classes, feature_size), device=device)
     mu_c_test = torch.zeros((num_classes, feature_size), device=device)
-    mu_c_clean = torch.zeros((num_classes, feature_size), device=device)
-    mu_c_weighted = torch.zeros((num_classes, feature_size), device=device)
 
     counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
-    clean_counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
-    weighted_counter = torch.zeros(num_classes, dtype=torch.int32, device=device)
     test_counter= torch.zeros(num_classes, dtype=torch.int32, device=device)
 
     top1 = []
@@ -624,20 +373,9 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
             # Aggiorna mu_G
             mu_G += current_features_F.sum(dim=0)
-
-            # Crea maschere per campioni puliti e corrotti
-            clean_mask = targets == real_targets
-            # Aggiorna mu_c_dict e counter per campioni puliti
-            clean_features = current_features_F[clean_mask]
-            clean_targets = targets[clean_mask]
-
-            clean_mu_c_batch, clean_counter_batch= compute_mu_c(clean_features,clean_targets, num_classes)
             mu_c_batch, counter_batch= compute_mu_c(current_features_F, targets, num_classes)
 
-            mu_c_clean += clean_mu_c_batch
             mu_c += mu_c_batch
-
-            clean_counter += clean_counter_batch
             counter += counter_batch
             
             #Compute accuracy
@@ -648,7 +386,6 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
     mu_G /= len(dataloader.dataset)
     for k in range(len(mu_c)):
           mu_c[k] /= counter[k] 
-          mu_c_clean[k] /= clean_counter[k] 
     
     # Collect performance on noisy samples
     noisy_dataset=NoisySubset(dataloader.dataset,noisy_indices)
@@ -662,26 +399,8 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
             noisy_prec1 = top_k_accuracy(outputs,targets ,1)
             noisy_top1.append(noisy_prec1)
-            
-    # perform centroid by weight sample based on distance on mu_c normal centroids
-    model.eval()
-    for idx, (inputs, labels) in enumerate(dataloader):
-        with torch.no_grad():
-            inputs = inputs.to(device)
-            targets = labels[:,1:,:].squeeze().to(device)
-            outputs = model(inputs)
-
-            current_features_F = features.features_F[-1].squeeze()
-            features.clear()
-
-            weighted_mu_c_batch, weighted_counter_batch= compute_weighted_mu_c(current_features_F, targets, num_classes, mu_c)
-
-            mu_c_weighted += weighted_mu_c_batch
-            weighted_counter += weighted_counter_batch
-
-    for k in range(len(mu_c_weighted)):
-          mu_c_weighted[k] /= weighted_counter[k]  
         
+
     # evaluate epoch
     nc4_count=0
     model.eval()     
@@ -723,7 +442,7 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
     handle_F.remove()
     
-    return mu_G, mu_c, mu_c_clean, mu_c_weighted, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), sum(noisy_top1)/len(noisy_top1), nc4_ratio, mu_c_test
+    return mu_G, mu_c, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), sum(noisy_top1)/len(noisy_top1), nc4_ratio, mu_c_test
 
 """Neural Collapse Properties and personalized metrics"""
 
@@ -865,7 +584,7 @@ def get_distance_n_noisy_samples(n,model,train_dataset, mu_c_train):
             y_real = targets[:,:1,:].squeeze().to(device)
             y_fake = targets[:,1:,:].squeeze().to(device)
             if y_fake == y_real:
-                raise ValueError("Bad extraction in  'take_first_n_clean_samples' function")
+                raise ValueError("Bad extraction in  'take_random_n_clean_samples' function")
             
             inputs = inputs.to(device)
             outputs = model(inputs)
@@ -927,7 +646,7 @@ def get_distance_n_samples(n,model,train_dataset, mu_c_train):
     return distance_dict
 
 # show acuracy and NC metrics
-def show_plot(info_dict, mode, version, dataset_name):
+def show_plot(info_dict, mode, version, dataset_name, stage):
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
     sns.set_palette("Set2")  # Palette di colori accattivante
@@ -1040,11 +759,11 @@ def show_plot(info_dict, mode, version, dataset_name):
     plt.tight_layout()
     #plt.show()
     # Salvare il grafico in un file PNG
-    plt.savefig(f'epoch_{len(info_dict["train_acc"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'epoch_{len(info_dict["train_acc"])}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 #tracking of n noisy samples relative distance respect its real/fake centorids 
-def show_noise_samples(track_samples,mode,version,dataset_name):
+def show_noise_samples(track_samples,mode,version,dataset_name,stage):
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
 
@@ -1074,11 +793,11 @@ def show_noise_samples(track_samples,mode,version,dataset_name):
     # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
     plt.tight_layout()
     # Salvare il grafico in un file PNG
-    plt.savefig(f'noise{int(noise_rate*100)}_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'noise{int(noise_rate*100)}_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 # tracking of n samples relative distance respect its label/nearest centorids 
-def show_clean_samples(track_samples,mode,version,dataset_name):
+def show_clean_samples(track_samples,mode,version,dataset_name, stage):
     # Impostare uno stile di base e una palette di colori
     sns.set_style("whitegrid")  # Stile con griglia bianca
 
@@ -1108,10 +827,10 @@ def show_clean_samples(track_samples,mode,version,dataset_name):
     # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
     plt.tight_layout()
     # Salvare il grafico in un file PNG
-    plt.savefig(f'clean_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'clean_samples_epoch_{len(track_samples[str(0)])}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices, dict_type='delta_distance'):
+def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices,stage, dict_type='delta_distance'):
     # Calcola le medie e le varianze per ogni riga (N,)
     means = tensor.mean(dim=1).cpu().numpy()
     variances = tensor.var(dim=1).cpu().numpy()
@@ -1199,46 +918,10 @@ def show_mean_var_relevations(tensor, mode, version, dataset_name, noisy_indices
 
     plt.tight_layout()
     # Salvare il grafico in un file PNG
-    plt.savefig(f'mean_variance_epoch_{len(tensor[0])}_{dict_type}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'mean_variance_epoch_{len(tensor[0])}_{dict_type}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def show_centroid_distances(weighted_dist, normal_dist,mode,version,dataset_name):
-    weighted_dist=weighted_dist[5:] # first five elements are huge and hide the visualization around zero values
-    # Impostare uno stile di base e una palette di colori
-    sns.set_style("whitegrid")  # Stile con griglia bianca
-
-    # Imposta lo stile di Seaborn
-    sns.set(style="whitegrid")
-
-    fig, axs = plt.subplots(2, 5, figsize=(15, 10))  # 2 righe e 5 colonne di grafici
-
-    for i in range(num_classes):
-        ax = axs[i // 5, i % 5]  # Seleziona il grafico in base alla classe
-        
-        # Plot delle distanze usando Seaborn
-        sns.lineplot(x=torch.arange(weighted_dist.size(0)), 
-                     y=weighted_dist[:, i].numpy(), 
-                     color='green', 
-                     label=f'W_c', 
-                     ax=ax)
-        
-        sns.lineplot(x=torch.arange(normal_dist.size(0)), 
-                     y=normal_dist[:, i].numpy(), 
-                     color='red', 
-                     label=f'normal_c({i})', 
-                     ax=ax)
-        
-        ax.set_title(f'Class {i}')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Distance')
-        ax.legend()
-
-    # Aggiustiamo lo spazio tra i plot per una migliore visualizzazione
-    plt.tight_layout()
-    # Salvare il grafico in un file PNG
-    plt.savefig(f'centroid_distances_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
-
-def show_noise_coherence(info_dict, mode, version, dataset_name):
+def show_noise_coherence(info_dict, mode, version, dataset_name, stage):
     sns.set_style("whitegrid")  # Stile con griglia bianca
     sns.set_palette("Set2")  # Set palette per i colori
 
@@ -1268,7 +951,7 @@ def show_noise_coherence(info_dict, mode, version, dataset_name):
 
     # Salva il grafico in un file PNG
     plt.tight_layout()
-    plt.savefig(f'coherence_epoch_{len(info_dict["coherence"])}_{mode}{version}_{dataset_name}.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'coherence_epoch_{len(info_dict["coherence"])}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
 
     # Chiudi la figura per liberare memoria
     plt.close()
@@ -1303,7 +986,7 @@ model = model.to(device)
 
 ############################################################################
 #define parameters
-epochs=40
+epochs=15
 
 # BCE loss
 criterion= nn.BCEWithLogitsLoss()
@@ -1319,8 +1002,6 @@ info_dict = {
         'eval_acc': [],
         'noisy_acc':[],
         'mu_c_train':[],
-        'mu_c_weighted':[],
-        'mu_c_clean':[],
         'coherence':[],
         'outliers_coherence':[],
         #'clean_mem':[],
@@ -1366,17 +1047,15 @@ early_learning_tracker=SampleLabelTracker()
 best_eval_accuracy=0
 coherence_epoch=-1
 early_learning=True
+early_learning_improvement_threshold=0.015
 new_fake_labels=[]
 
-clean_weighted_centroid_distances = torch.zeros(((epochs), num_classes))
-clean_real_centroid_distances = torch.zeros(((epochs) , num_classes))
-
+stage=1
 
 for i in range(epochs):
-    #TRAIN MODEL at current epoch
 
     #Evaluate NC properties at current epoch
-    mu_G_train, mu_c_train, mu_c_clean, mu_c_weighted, train_acc, eval_acc, noise_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, cifar10_noisy_trainset.get_corrupted_indices(), optimizer, criterion, num_classes, feature_size, mode=mode)
+    mu_G_train, mu_c_train, train_acc, eval_acc, noise_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, cifar10_noisy_trainset.get_corrupted_indices(), optimizer, criterion, num_classes, feature_size, mode=mode)
 
     #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
     Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker,early_learning_tracker, early_learning, mode=mode)
@@ -1384,15 +1063,15 @@ for i in range(epochs):
     collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_train))
     
     # Early learning coherence exploitation
-    if (best_eval_accuracy+0.01) < eval_acc and early_learning:
-        best_eval_accuracy = eval_acc
-        coherence_epoch+=1
-    else:
-        label_smooth_ref=early_learning_tracker.extract_epoch(coherence_epoch)
-        print('early learning references found, going to late separation phase...')
-        print(label_smooth_ref.shape)
-        early_learning=False
-        new_fake_labels= early_learning_label_smoothing(label_smooth_ref,trainloader)
+    if early_learning:
+        if (best_eval_accuracy + early_learning_improvement_threshold) < eval_acc:
+            best_eval_accuracy = eval_acc
+            coherence_epoch+=1
+        else:
+            label_smooth_ref=early_learning_tracker.extract_epoch(coherence_epoch)
+            print('early learning references found, going to late separation phase...')
+            early_learning=False
+            new_fake_labels= early_learning_label_smoothing(label_smooth_ref,trainloader)
 
     #NC2
     if resnet:
@@ -1428,11 +1107,6 @@ for i in range(epochs):
     label_coherence_score = compute_label_coherence_score(model, mu_c_train, complete_noisy_dataloader, norm_factor)
     label_coherence_of_nearest_centroid = compute_label_coherence_for_noisy_outliers(model, mu_c_train, complete_noisy_dataloader)
     
-    # Noise Memorization
-    #clean_label_memorization = compute_memorization(model, clean_dataloader, mu_c_test)
-    # Real labels Memorization
-    #noise_label_memorization = compute_memorization(model, noisy_dataloader, mu_c_test)
-
     # Track of n noisy samples 
     features_distance_items = get_distance_n_noisy_samples(12 , model, train_dataset, mu_c_train)
     for key, v in features_distance_items.items():
@@ -1450,37 +1124,24 @@ for i in range(epochs):
     info_dict['NC3'].append(alignment)
     info_dict['NC4'].append(nc4)
     info_dict['mu_c_train'].append(mu_c_train)
-    info_dict['mu_c_weighted'].append(mu_c_weighted)
-    info_dict['mu_c_clean'].append(mu_c_clean)
     info_dict['coherence'].append(label_coherence_score)
     info_dict['outliers_coherence'].append(label_coherence_of_nearest_centroid)
-    #info_dict['mem'].append(memorization)
-    #info_dict['clean_mem'].append(clean_label_memorization)
-    #info_dict['fake_mem'].append(noise_label_memorization)
 
     #Store accuracies
     info_dict['train_acc'].append(train_acc)
     info_dict['eval_acc'].append(eval_acc)
     info_dict['noisy_acc'].append(noise_acc)
 
-    #Compute distances between computed centroids
-    clean_weighted = torch.norm(mu_c_weighted - mu_c_clean, dim=1)  
-    clean_real = torch.norm(mu_c_train - mu_c_clean, dim=1)  
-
-    # Store distances at current epoch
-    clean_weighted_centroid_distances[i, :] = clean_weighted
-    clean_real_centroid_distances[i, :] = clean_real
-
     if (i+1) % 5 == 0:
-        show_plot(info_dict, mode, version, dataset_name) 
-        show_noise_samples(tracking_noise, mode, version, dataset_name)
-        show_clean_samples(tracking_clean, mode, version, dataset_name)
+        show_plot(info_dict, mode, version, dataset_name, stage) 
+        show_noise_samples(tracking_noise, mode, version, dataset_name, stage)
+        show_clean_samples(tracking_clean, mode, version, dataset_name, stage)
 
         delta_distances= delta_distance_tracker.tensorize()
         #distances= distance_tracker.tensorize()
 
-        show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), dict_type='delta_distance')
-        show_noise_coherence(info_dict, mode, version,dataset_name)
+        show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), stage=stage, dict_type='delta_distance')
+        show_noise_coherence(info_dict, mode, version,dataset_name, stage)
         del delta_distances
         
     '''
@@ -1499,10 +1160,159 @@ for i in range(epochs):
 
     print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} | coherence:{label_coherence_score:.4f}]')
 
-show_centroid_distances(clean_weighted_centroid_distances,clean_real_centroid_distances,mode,version,dataset_name)
-
 print('Application of early learning coherence and late separation phenomenon')
 print('Use label smoothing from early learning embeddings, that have higher correlation scores with the real labels in terms of distance in feature space')
 print('Use robust loss using a rescaled BCE with Sigmoid-based weighted, using by relative distance metric to force real labels to be closer its centorid and move noise far as possible from its fake centroid, and enhance separability.')
 
 
+#change loss function
+criterion=SigmoidWeightingBCELoss()
+# add label smoothing labels to dataloader
+trainloader=train_dataset.return_only_noise_dataset( new_fake_labels.cpu().numpy())
+# store_sample_weights as weighting logits
+delta_distances_weights = delta_distance_tracker.tensorize()
+
+info_dict = {
+        'NC1': [],
+        'NC2': [],
+        'NC3': [],
+        'NC4': [],
+        'mem': [],
+        'train_acc': [],
+        'eval_acc': [],
+        'noisy_acc':[],
+        'mu_c_train':[],
+        'coherence':[],
+        'outliers_coherence':[],
+        #'clean_mem':[],
+        #'fake_mem':[],
+}
+
+tracking_noise= {
+    '0':[],
+    '1':[],
+    '2':[],
+    '3':[],
+    '4':[],
+    '5':[],
+    '6':[],
+    '7':[],
+    '8':[],
+    '9':[],
+    '10':[],
+    '11':[]
+}
+
+tracking_clean={
+    '0':[],
+    '1':[],
+    '2':[],
+    '3':[],
+    '4':[],
+    '5':[],
+    '6':[],
+    '7':[],
+    '8':[],
+    '9':[],
+    '10':[],
+    '11':[]
+}
+
+stage=2
+
+for i in range(epochs):
+    #TODO: modify epoch_info, istead of one hot, we have already the labels coputed
+    #Evaluate NC properties at current epoch
+    mu_G_train, mu_c_train, train_acc, eval_acc, noise_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, cifar10_noisy_trainset.get_corrupted_indices(), optimizer, criterion, num_classes, feature_size, mode=mode)
+
+    #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
+    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker,early_learning_tracker, early_learning, mode=mode)
+    Sigma_B = compute_Sigma_B(mu_c_train, mu_G_train)
+    collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_train))
+    #NC2
+    if resnet:
+      A = model.fc.weight
+    elif densenet:
+      A = model.classifier.weight
+    elif lenet:
+      A = model.fc.weight
+    elif regnet:
+      A = model.fc.weight
+    elif efficientnet:
+      A = model.classifier[1].weight
+    elif mnas:
+      A = model.classifier[1].weight
+    else:
+      break
+
+    ETF_metric = compute_ETF(mu_c_train, mu_G_train,feature_size)
+
+    #NC3
+    alignment= self_dual_alignment(A, mu_c_train, mu_G_train, feature_size)
+
+    # Total Memorization
+    #memorization= compute_total_memorization(model, trainloader, mu_c_test)
+    
+    # Divide dataset between real and fake samples
+    clean_labels_dataset, noisy_labels_dataset, complete_noisy_labels_dataset = train_dataset.divide_samples()
+    clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+    complete_noisy_dataloader = DataLoader(complete_noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
+
+    norm_factor=len(complete_noisy_labels_dataset)
+    label_coherence_score = compute_label_coherence_score(model, mu_c_train, complete_noisy_dataloader, norm_factor)
+    label_coherence_of_nearest_centroid = compute_label_coherence_for_noisy_outliers(model, mu_c_train, complete_noisy_dataloader)
+    
+    # Track of n noisy samples 
+    features_distance_items = get_distance_n_noisy_samples(12 , model, train_dataset, mu_c_train)
+    for key, v in features_distance_items.items():
+        tracking_noise[key].append(v)
+    
+    #track n clean samples
+    features_distance_items = get_distance_n_samples(12 , model, train_dataset, mu_c_train)
+    for key, v in features_distance_items.items():
+        tracking_clean[key].append(v)
+
+    ################################################################################
+    #Store NC properties
+    info_dict['NC1'].append(collapse_metric)
+    info_dict['NC2'].append(ETF_metric)
+    info_dict['NC3'].append(alignment)
+    info_dict['NC4'].append(nc4)
+    info_dict['mu_c_train'].append(mu_c_train)
+    info_dict['coherence'].append(label_coherence_score)
+    info_dict['outliers_coherence'].append(label_coherence_of_nearest_centroid)
+
+
+    #Store accuracies
+    info_dict['train_acc'].append(train_acc)
+    info_dict['eval_acc'].append(eval_acc)
+    info_dict['noisy_acc'].append(noise_acc)
+
+    if (i+1) % 5 == 0:
+        show_plot(info_dict, mode, version, dataset_name, stage) 
+        show_noise_samples(tracking_noise, mode, version, dataset_name, stage)
+        show_clean_samples(tracking_clean, mode, version, dataset_name, stage)
+
+        delta_distances= delta_distance_tracker.tensorize()
+        #distances= distance_tracker.tensorize()
+
+        show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=cifar10_noisy_trainset.get_corrupted_indices(), satge=stage, dict_type='delta_distance')
+        show_noise_coherence(info_dict, mode, version,dataset_name, stage)
+        del delta_distances
+        
+    '''
+    if (i+1) % epochs == 0:
+        visualizer = EmbeddingVisualizer2D(model,feature_size, mode, version, dataset_name, (i+1), device, trainloader, cifar10_noisy_trainset.corrupted_indices, mu_c_train, mu_c_weighted, mu_c_clean)
+        visualizer.run()
+    '''
+
+    torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights2.pth')
+
+    with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_results2.pkl', 'wb') as f:
+        pickle.dump(info_dict, f)
+
+    with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track2.pkl', 'wb') as f:
+        pickle.dump(tracking_noise, f)
+
+    print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} | coherence:{label_coherence_score:.4f}]')

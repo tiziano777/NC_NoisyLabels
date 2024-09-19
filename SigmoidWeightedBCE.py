@@ -1,3 +1,5 @@
+import torch.nn as nn
+
 class SigmoidWeightingBCELoss(nn.Module):
     def __init__(self, min_weight=0.01, max_weight=1.5, scale=1.1):
         """
@@ -5,7 +7,7 @@ class SigmoidWeightingBCELoss(nn.Module):
         :param max_weight: Peso massimo per i campioni con valori di metrica più positivi
         :param scale: Scala per la funzione sigmoide, controlla l'effetto della metrica sulla ponderazione
         """
-        super(SigmoidWeightingLoss, self).__init__()
+        super(SigmoidWeightingBCELoss, self).__init__()
         self.min_weight = min_weight
         self.max_weight = max_weight
         self.scale = scale
