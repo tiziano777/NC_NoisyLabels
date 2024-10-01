@@ -32,6 +32,11 @@ class SampleLabelTracker:
         tensorized_data= self.tensorize()
         return tensorized_data[:, epoch_idx, :]
 
+    def average_epochs(self):
+        tensorized_data= self.tensorize()
+        mean_smoothing= torch.mean(tensorized_data, dim=1)
+        return mean_smoothing
+
     def get_results(self):
         return self.result_dict
 

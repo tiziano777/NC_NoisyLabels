@@ -1,19 +1,26 @@
 import numpy as np
+import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 
 # Class to store data with only fake labels
 class NoiseDataset(Dataset):
-    def __init__(self, data, fake_labels):
-        self.data = data
+    def __init__(self, data, fake_labels, weights=None):
+        self.data = np.array([data[i][0] for i in range(len(data))])
         self.fake_labels = fake_labels
+        self.weights = weights  # optional weights
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        data = self.data[idx]
+        x = torch.tensor(self.data[idx])
         fake_label = self.fake_labels[idx]
-        return data, fake_label
+        
+        if self.weights is not None:
+            weight = self.weights[idx]
+            return x, fake_label, weight
+        
+        return x, fake_label
 
 #class to store data with fake/clean labels
 class NoisyLabelsDataset(Dataset):
@@ -79,15 +86,6 @@ class NoisyLabelsDatasetManager(Dataset):
         
         return x, y_output
 
-    def get_fake_labels(self):
-        return self.real_labels
-    
-    def get_clean_labels(self):
-        return self.fake_labels
-    
-    def get_corrupted_indices(self):
-        return self.corrupted_indices
-    
     def take_random_n_noise_samples(self, n):
         # Seleziona casualmente n campioni in cui l'etichetta reale non corrisponde a quella falsa
         matching_indices = np.where(self.real_labels != self.fake_labels)[0]
@@ -147,18 +145,31 @@ class NoisyLabelsDatasetManager(Dataset):
         
         return clean_samples, noisy_labels_samples, complete_noisy_labels_samples
 
-    def return_only_noise_dataset(self,labels):
-        data = [self.dataset[i][0] for i in self.dataset.indices]
-        noise_dataset=NoiseDataset(data, labels)
+    def return_only_noise_dataset(self, labels, weights=None):
+        """
+        Crea un dataset NoiseDataset con etichette aggiornate e pesi opzionali.
+        """
+        data = [self.dataset[i][0] for i in range(len(self.dataset))]
+        noise_dataset = NoiseDataset(data, labels, weights)
         return noise_dataset
 
     def __len__(self):
         return len(self.dataset)
-  
+    
+    def get_fake_labels(self):
+        return self.real_labels
+    
+    def get_clean_labels(self):
+        return self.fake_labels
+    
+    def get_corrupted_indices(self):
+        return self.corrupted_indices
+    
 class NoisySubset(Subset):
     def __init__(self, dataset, indices):
         super().__init__(dataset, indices)
         self.dataset = dataset
+        self.indices = indices
 
     def __getattr__(self, name):
         # Questo metodo viene chiamato quando cerchi di accedere a un attributo/metodo

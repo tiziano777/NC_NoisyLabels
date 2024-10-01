@@ -93,6 +93,7 @@ transform = transforms.Compose(
 
 """CIFAR-10"""
 
+'''
 # Caricamento del dataset di addestramento
 cifar10_trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
                                         download=True, transform=transform)
@@ -109,8 +110,7 @@ np.random.shuffle(indices)
 shuffled_train_dataset= Subset(cifar10_trainset,indices)
 
 #DataLoaders
-cifar10_trainloader = torch.utils.data.DataLoader(shuffled_train_dataset, batch_size=128,
-                                          shuffle=False, num_workers=2, drop_last=True)
+cifar10_trainloader = torch.utils.data.DataLoader(shuffled_train_dataset, batch_size=128, shuffle=True, num_workers=2, drop_last=True)
 
 
 cifar10_testloader = torch.utils.data.DataLoader(cifar10_testset, batch_size=128, num_workers=2, drop_last=True)
@@ -141,12 +141,12 @@ regnet_feature_size = cifar10_regnet.fc.in_features
 efficientnet_feature_size= cifar10_efficientnet.classifier[1].in_features
 mnas_feature_size=cifar10_mnas05.classifier[1].in_features
 lenet_feature_size=cifar10_lenet.fc.in_features
+'''
 
-
-#OTHER DATASET COMMENTED******************************************
 
 """FASHION-MNIST"""
-'''
+
+
 # Caricamento del dataset di addestramento Fashion MNIST
 fashion_mnist_trainset = datasets.FashionMNIST(root='./data', train=True,
                                                download=True, transform=grey_transform)
@@ -155,18 +155,12 @@ fashion_mnist_trainset = datasets.FashionMNIST(root='./data', train=True,
 fashion_mnist_testset = datasets.FashionMNIST(root='./data', train=False,
                                               download=True, transform=grey_transform)
 
-fashion_mnist_images_per_class = 500
-fashion_mnist_total_images_to_select = fashion_mnist_images_per_class * len(fashion_mnist_trainset.classes)
-fashion_mnist_sampler = SubsetRandomSampler(torch.randperm(len(fashion_mnist_trainset))[:fashion_mnist_total_images_to_select])
 
-# DataLoaders per Fashion MNIST
-fashion_mnist_trainloader = DataLoader(fashion_mnist_trainset, batch_size=32,
-                                       sampler=fashion_mnist_sampler, num_workers=2, drop_last=True)
+# Configurazione DataLoaders
+fashion_mnist_trainloader = DataLoader(fashion_mnist_trainset, batch_size=256, shuffle=False, num_workers=2, drop_last=False)  
+           
+fashion_mnist_testloader = DataLoader(fashion_mnist_testset, batch_size=64, num_workers=2)
 
-fashion_mnist_indices = torch.randperm(len(fashion_mnist_testset))[:384]  # Seleziona casualmente 384 indici per evaluation
-fashion_mnist_test_sampler = SubsetRandomSampler(fashion_mnist_indices)                                      
-fashion_mnist_testloader = DataLoader(fashion_mnist_testset, batch_size=32,
-                                      sampler=fashion_mnist_test_sampler, num_workers=2)
 
 fashion_mnist_densenet121 = torch.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=False)
 fashion_mnist_resnet18 = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
@@ -185,7 +179,16 @@ fashion_mnist_regnet400.fc = nn.Linear(fashion_mnist_regnet400.fc.in_features, f
 fashion_mnist_mnas05.classifier[1]=nn.Linear(fashion_mnist_mnas05.classifier[1].in_features, fashion_mnist_classes, bias=False)
 fashion_mnist_mnas075.classifier[1]=nn.Linear(fashion_mnist_mnas075.classifier[1].in_features, fashion_mnist_classes, bias=False)
 fashion_mnist_efficientnet.classifier[1]=nn.Linear(fashion_mnist_efficientnet.classifier[1].in_features, fashion_mnist_classes, bias=False)
-'''
+
+# Feature Size
+densenet_feature_size = fashion_mnist_densenet121.classifier.in_features
+resnet_feature_size = fashion_mnist_resnet18.fc.in_features
+regnet_feature_size = fashion_mnist_regnet400.fc.in_features
+efficientnet_feature_size = fashion_mnist_efficientnet.classifier[1].in_features
+mnas_feature_size = fashion_mnist_mnas05.classifier[1].in_features
+lenet_feature_size = fashion_mnist_lenet.fc.in_features
+
+
 """SVHN"""
 
 '''
@@ -252,21 +255,63 @@ stl10_lenet.fc = nn.Linear(stl10_lenet.fc.in_features, stl10_classes, bias=False
 stl10_regnet.fc = nn.Linear(stl10_regnet.fc.in_features, stl10_classes, bias=False)
 '''
 
+"""MNIST"""
+'''
+# Caricamento del dataset di addestramento MNIST
+mnist_trainset = datasets.MNIST(root='./data', train=True,
+                                download=True, transform=grey_transform)
+
+# Caricamento del dataset di test MNIST
+mnist_testset = datasets.MNIST(root='./data', train=False,
+                               download=True, transform=grey_transform)
+
+# Configurazione del DataLoader
+mnist_trainloader = DataLoader(mnist_trainset, batch_size=256, shuffle=True, num_workers=2, drop_last=False)  
+mnist_testloader = DataLoader(mnist_testset, batch_size=32, num_workers=2)
+
+# Carica i modelli predefiniti e cambia l'ultimo livello per MNIST (10 classi)
+mnist_densenet121 = torch.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=False)
+mnist_resnet18 = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
+mnist_lenet = models.googlenet(pretrained=False)
+mnist_regnet400 = models.regnet_y_400mf(pretrained=False)
+mnist_mnas075= models.mnasnet0_75(pretrained=False)
+mnist_mnas05= models.mnasnet0_5(pretrained=False)
+mnist_efficientnet=models.efficientnet_b0(pretrained=False)
+
+# Numero di classi nel dataset MNIST
+mnist_classes = 10
+
+# Modifica l'ultimo livello di ciascun modello per gestire 10 classi (MNIST)
+mnist_densenet121.classifier = nn.Linear(mnist_densenet121.classifier.in_features, mnist_classes, bias=False)
+mnist_resnet18.fc = nn.Linear(mnist_resnet18.fc.in_features, mnist_classes, bias=False)
+mnist_lenet.fc = nn.Linear(mnist_lenet.fc.in_features, mnist_classes, bias=False)
+mnist_regnet400.fc = nn.Linear(mnist_regnet400.fc.in_features, mnist_classes, bias=False)
+mnist_mnas05.classifier[1] = nn.Linear(mnist_mnas05.classifier[1].in_features, mnist_classes, bias=False)
+mnist_mnas075.classifier[1] = nn.Linear(mnist_mnas075.classifier[1].in_features, mnist_classes, bias=False)
+mnist_efficientnet.classifier[1] = nn.Linear(mnist_efficientnet.classifier[1].in_features, mnist_classes, bias=False)
+
+densenet_feature_size = mnist_densenet121.classifier.in_features
+resnet_feature_size = mnist_resnet18.fc.in_features
+regnet_feature_size = mnist_regnet400.fc.in_features
+efficientnet_feature_size = mnist_efficientnet.classifier[1].in_features
+mnas_feature_size = mnist_mnas05.classifier[1].in_features
+lenet_feature_size = mnist_lenet.fc.in_features
+'''
+
 #*****************************************************************
 
-"""
-    Calcola la top-k accuracy per un batch di output di un modello.
-
-    Args:
-    outputs (torch.Tensor): Tensor contenente le predizioni del modello di dimensione (batch_size, num_classes).
-    labels (torch.Tensor): Tensor contenente le etichette di dimensione (batch_size).
-    k (int): Numero di top predizioni da considerare per calcolare l'accuratezza.
-
-    Returns:
-    float: La top-k accuracy per il batch fornito.
-"""
 def top_k_accuracy(outputs, labels, k=3):
+    """
+        Calcola la top-k accuracy per un batch di output di un modello.
 
+        Args:
+        outputs (torch.Tensor): Tensor contenente le predizioni del modello di dimensione (batch_size, num_classes).
+        labels (torch.Tensor): Tensor contenente le etichette di dimensione (batch_size).
+        k (int): Numero di top predizioni da considerare per calcolare l'accuratezza.
+
+        Returns:
+        float: La top-k accuracy per il batch fornito.
+    """
     # Otteniamo i primi k indici di predizioni più alte per ciascun campione
     top_k_preds = torch.topk(outputs, k, dim=1).indices
 
@@ -376,6 +421,9 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
     # evaluate epoch
     nc4_count=0
+    true_positives = torch.zeros(num_classes)
+    false_positives = torch.zeros(num_classes)
+    false_negatives = torch.zeros(num_classes)
     model.eval()     
     for idx, (eval_inputs, eval_targets) in enumerate(eval_loader):
         with torch.no_grad():
@@ -408,6 +456,20 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
             mu_c_test += mu_c_test_batch
             test_counter += test_counter_batch
+
+            preds = torch.argmax(eval_outputs, dim=1).to(device)
+            for class_idx in range(num_classes):
+                true_positives[class_idx] += ((preds == class_idx) & (eval_targets == class_idx)).sum().item()
+                false_positives[class_idx] += ((preds == class_idx) & (eval_targets != class_idx)).sum().item()
+                false_negatives[class_idx] += ((preds != class_idx) & (eval_targets == class_idx)).sum().item()
+    
+    # Calcoliamo Precision, Recall e F1 per ogni classe
+    precision = true_positives / (true_positives + false_positives + 1e-8)  
+    recall = true_positives / (true_positives + false_negatives + 1e-8)
+    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
+    
+    f1_macro = f1_scores.mean().item()
+    
             
     # normalize test centroids            
     for k in range(len(mu_c_test)):
@@ -415,7 +477,7 @@ def compute_epoch_info(model, dataloader,eval_loader, optimizer, criterion, num_
 
     handle_F.remove()
     
-    return mu_G, mu_c, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), nc4_ratio, mu_c_test
+    return mu_G, mu_c, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), nc4_ratio, mu_c_test, f1_macro
 
 """Neural Collapse Properties and personalized metrics"""
 
@@ -551,6 +613,15 @@ def show_plot(info_dict, mode, version, dataset_name):
              linewidth=2,
              color='orange',
              label='Test Accuracy')
+
+    sns.lineplot(x=np.arange(1, len(info_dict['f1']) + 1),
+             y=info_dict['f1'],
+             ax=axs[0, 0],
+             marker="o",
+             linewidth=2,
+             color='violet',
+             label='F1 score')
+
     axs[0, 0].set_title('Accuracy', fontsize=16, fontweight='bold')
     axs[0, 0].set_xlabel('Epochs', fontsize=14)
     axs[0, 0].set_ylabel('Accuracy', fontsize=14)
@@ -665,18 +736,19 @@ info_dict = {
         'train_acc': [],
         'eval_acc': [],
         'mu_c': [],
+        'f1':[],
 }
 
 ##########################################################################
 
 #define dataset, model, its version
-dataset_name='cifar10'
+dataset_name='fashion_mnist'
 mode='lenet'
 version=''
 
 #define model and relative dataset to train and collapse
-model = cifar10_lenet
-num_classes = cifar10_classes
+model = fashion_mnist_lenet
+num_classes = fashion_mnist_classes
 feature_size =  lenet_feature_size
 
 #flags
@@ -688,10 +760,10 @@ efficientnet=False
 mnas=False
 
 #datasets
-train_dataset = shuffled_train_dataset
-test_dataset = cifar10_testset 
-trainloader = cifar10_trainloader
-testloader = cifar10_testloader
+train_dataset = fashion_mnist_trainset
+test_dataset = fashion_mnist_testset 
+trainloader = fashion_mnist_trainloader
+testloader = fashion_mnist_testloader
 
 #model.features.conv0 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 model = model.to(device)
@@ -720,7 +792,7 @@ for i in range(epochs):
     #TRAIN MODEL at current epoch
 
     #Evaluate NC properties at current epoch
-    mu_G_train, mu_c_train, train_acc, eval_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, feature_size, mode=mode)
+    mu_G_train, mu_c_train, train_acc, eval_acc, nc4, mu_c_test, f1_score = compute_epoch_info( model, trainloader, testloader, optimizer, criterion, num_classes, feature_size, mode=mode)
 
     #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
     Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, distance_tracker, mode=mode)
@@ -759,7 +831,7 @@ for i in range(epochs):
     #Store accuracies
     info_dict['train_acc'].append(train_acc)
     info_dict['eval_acc'].append(eval_acc)
-
+    info_dict['f1'].append(f1_score)
 
 
     if (i+1) % 5 == 0:

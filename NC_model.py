@@ -83,184 +83,7 @@ def select_model(mode):
 
 folder_path= './NC_experiments'
 
-def grayscale_to_rgb(image):
-    return image.convert("RGB")
 
-# grey scale transformations: tensorizzazione e normalizzazione
-grey_transform = transforms.Compose([
-    transforms.Lambda(lambda x: grayscale_to_rgb(x)),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-# color transformations:  tensorizzazione e normalizzazione
-transform = transforms.Compose(
-    [transforms.ToTensor(),
-     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-
-# Definizione del tasso di rumore
-noise_rate = 0.20
-
-"""CIFAR-10"""
-
-# Caricamento clean datasets
-cifar10_trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-cifar10_testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-
-# Shuffle the trainset
-num_samples = len(cifar10_trainset)
-indices = np.arange(num_samples)
-np.random.shuffle(indices)
-shuffled_train_dataset= Subset(cifar10_trainset,indices)
-
-# Creazione degli oggetti NoisyLabelsDataset
-cifar10_noisy_trainset = NoisyLabelsDatasetManager(shuffled_train_dataset, noise_rate=noise_rate)
-
-corrupted_indices = cifar10_noisy_trainset.get_corrupted_indices()
-# Configurazione del DataLoader
-cifar10_trainloader = DataLoader(cifar10_noisy_trainset, batch_size=256, shuffle=True, num_workers=2, drop_last=False)
-cifar10_testloader = DataLoader(cifar10_testset, batch_size=256, num_workers=2, drop_last=True)
-
-
-cifar10_lenet = models.googlenet(pretrained=False)
-cifar10_resnet18 = models.resnet18(pretrained=False)
-cifar10_densenet121 = models.densenet121(pretrained=False)
-cifar10_regnet = models.regnet_y_400mf(pretrained=False)
-cifar10_efficientnet=models.efficientnet_b0(pretrained=False)
-cifar10_mnas075= models.mnasnet0_75(pretrained=False)
-cifar10_mnas05= models.mnasnet0_5(pretrained=False)
-
-
-cifar10_classes = 10
-
-cifar10_densenet121.classifier = nn.Linear(cifar10_densenet121.classifier.in_features, cifar10_classes, bias=False)
-cifar10_resnet18.fc = nn.Linear(cifar10_resnet18.fc.in_features, cifar10_classes, bias=False)
-cifar10_lenet.fc = nn.Linear(cifar10_lenet.fc.in_features, cifar10_classes, bias=False)
-cifar10_regnet.fc = nn.Linear(cifar10_regnet.fc.in_features, cifar10_classes, bias=False)
-
-cifar10_efficientnet.classifier[1]=nn.Linear(cifar10_efficientnet.classifier[1].in_features, cifar10_classes, bias=False)
-cifar10_mnas05.classifier[1]=nn.Linear(cifar10_mnas05.classifier[1].in_features, cifar10_classes, bias=False)
-cifar10_mnas075.classifier[1]=nn.Linear(cifar10_mnas075.classifier[1].in_features, cifar10_classes, bias=False)
-
-densenet_feature_size = cifar10_densenet121.classifier.in_features
-resnet_feature_size = cifar10_resnet18.fc.in_features
-regnet_feature_size = cifar10_regnet.fc.in_features
-efficientnet_feature_size= cifar10_efficientnet.classifier[1].in_features
-mnas_feature_size=cifar10_mnas05.classifier[1].in_features
-lenet_feature_size=cifar10_lenet.fc.in_features
-
-
-################################################################################################################################
-''' FASHION MNIST'''
-
-'''
-# Caricamento del dataset di addestramento Fashion MNIST
-fashion_mnist_trainset = datasets.FashionMNIST(root='./data', train=True,
-                                               download=True, transform=grey_transform)
-
-# Caricamento del dataset di test Fashion MNIST
-fashion_mnist_testset = datasets.FashionMNIST(root='./data', train=False,
-                                              download=True, transform=grey_transform)
-
-
-# Shuffle the trainset
-num_samples = len(fashion_mnist_trainset)
-indices = np.arange(num_samples)
-np.random.shuffle(indices)
-shuffled_train_dataset= Subset(fashion_mnist_trainset,indices)
-
-# Creazione degli oggetti NoisyLabelsDataset
-fashion_mnist_noisy_trainset = NoisyLabelsDatasetManager(shuffled_train_dataset, noise_rate=noise_rate)
-
-corrupted_indices = fashion_mnist_noisy_trainset.get_corrupted_indices()
-
-# Configurazione DataLoaders
-fashion_mnist_trainloader = DataLoader(fashion_mnist_noisy_trainset, batch_size=256, shuffle=True, num_workers=2, drop_last=False)  
-           
-fashion_mnist_testloader = DataLoader(fashion_mnist_testset, batch_size=64, num_workers=2)
-
-
-fashion_mnist_densenet121 = torch.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=False)
-fashion_mnist_resnet18 = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
-fashion_mnist_lenet = models.googlenet(pretrained=False)
-fashion_mnist_regnet400 = models.regnet_y_400mf(pretrained=False)
-fashion_mnist_mnas075= models.mnasnet0_75(pretrained=False)
-fashion_mnist_mnas05= models.mnasnet0_5(pretrained=False)
-fashion_mnist_efficientnet=models.efficientnet_b0(pretrained=False)
-
-fashion_mnist_classes = 10
-
-fashion_mnist_densenet121.classifier = nn.Linear(fashion_mnist_densenet121.classifier.in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_resnet18.fc = nn.Linear(fashion_mnist_resnet18.fc.in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_lenet.fc = nn.Linear(fashion_mnist_lenet.fc.in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_regnet400.fc = nn.Linear(fashion_mnist_regnet400.fc.in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_mnas05.classifier[1]=nn.Linear(fashion_mnist_mnas05.classifier[1].in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_mnas075.classifier[1]=nn.Linear(fashion_mnist_mnas075.classifier[1].in_features, fashion_mnist_classes, bias=False)
-fashion_mnist_efficientnet.classifier[1]=nn.Linear(fashion_mnist_efficientnet.classifier[1].in_features, fashion_mnist_classes, bias=False)
-
-# Feature Size
-densenet_feature_size = fashion_mnist_densenet121.classifier.in_features
-resnet_feature_size = fashion_mnist_resnet18.fc.in_features
-regnet_feature_size = fashion_mnist_regnet400.fc.in_features
-efficientnet_feature_size = fashion_mnist_efficientnet.classifier[1].in_features
-mnas_feature_size = fashion_mnist_mnas05.classifier[1].in_features
-lenet_feature_size = fashion_mnist_lenet.fc.in_features
-'''
-
-################################################################################################################################
-"""MNIST"""
-'''
-# Caricamento del dataset di addestramento MNIST
-mnist_trainset = datasets.MNIST(root='./data', train=True,
-                                download=True, transform=grey_transform)
-
-# Caricamento del dataset di test MNIST
-mnist_testset = datasets.MNIST(root='./data', train=False,
-                               download=True, transform=grey_transform)
-
-# Shuffle the trainset
-num_samples = len(mnist_trainset)
-indices = np.arange(num_samples)
-np.random.shuffle(indices)
-shuffled_train_dataset= Subset(mnist_trainset,indices)
-
-# Creazione degli oggetti NoisyLabelsDataset
-mnist_noisy_trainset = NoisyLabelsDatasetManager(shuffled_train_dataset, noise_rate=noise_rate)
-
-corrupted_indices = mnist_noisy_trainset.get_corrupted_indices()
-
-# Configurazione del DataLoader
-mnist_trainloader = DataLoader(mnist_noisy_trainset, batch_size=256, shuffle=False, num_workers=2, drop_last=False)  
-mnist_testloader = DataLoader(mnist_testset, batch_size=32, num_workers=2)
-
-# Carica i modelli predefiniti e cambia l'ultimo livello per MNIST (10 classi)
-mnist_densenet121 = torch.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=False)
-mnist_resnet18 = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False)
-mnist_lenet = models.googlenet(pretrained=False)
-mnist_regnet400 = models.regnet_y_400mf(pretrained=False)
-mnist_mnas075= models.mnasnet0_75(pretrained=False)
-mnist_mnas05= models.mnasnet0_5(pretrained=False)
-mnist_efficientnet=models.efficientnet_b0(pretrained=False)
-
-# Numero di classi nel dataset MNIST
-mnist_classes = 10
-
-# Modifica l'ultimo livello di ciascun modello per gestire 10 classi (MNIST)
-mnist_densenet121.classifier = nn.Linear(mnist_densenet121.classifier.in_features, mnist_classes, bias=False)
-mnist_resnet18.fc = nn.Linear(mnist_resnet18.fc.in_features, mnist_classes, bias=False)
-mnist_lenet.fc = nn.Linear(mnist_lenet.fc.in_features, mnist_classes, bias=False)
-mnist_regnet400.fc = nn.Linear(mnist_regnet400.fc.in_features, mnist_classes, bias=False)
-mnist_mnas05.classifier[1] = nn.Linear(mnist_mnas05.classifier[1].in_features, mnist_classes, bias=False)
-mnist_mnas075.classifier[1] = nn.Linear(mnist_mnas075.classifier[1].in_features, mnist_classes, bias=False)
-mnist_efficientnet.classifier[1] = nn.Linear(mnist_efficientnet.classifier[1].in_features, mnist_classes, bias=False)
-
-densenet_feature_size = mnist_densenet121.classifier.in_features
-resnet_feature_size = mnist_resnet18.fc.in_features
-regnet_feature_size = mnist_regnet400.fc.in_features
-efficientnet_feature_size = mnist_efficientnet.classifier[1].in_features
-mnas_feature_size = mnist_mnas05.classifier[1].in_features
-lenet_feature_size = mnist_lenet.fc.in_features
-'''
 ##################################################################################################################################################
 ##################################################################################################################################################
 
@@ -313,23 +136,16 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
     model.train()
     for idx, batch in enumerate(dataloader):
-
-            if stage==1:
-                inputs, labels = batch
-            else:
-                inputs, labels, weights = batch
-
+            inputs, labels = batch
             inputs = inputs.to(device)
-
             if stage==1:
                 targets = labels[:,1:,:].squeeze().to(device) # take corrupted labels (training labels)
                 real_targets = labels[:,:1,:].squeeze().to(device) #take true labels, useful to create clean centroids.
-                one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
-                #one_hot_targets = label_smoothing(targets, num_classes=num_classes,smoothing=0.3).float()
+                #one_hot_targets = F.one_hot(targets, num_classes=num_classes).float()
+                one_hot_targets = label_smoothing(targets, num_classes=num_classes).float()
             else:
                 targets = torch.argmax(labels,dim=1).to(device)
                 one_hot_targets = labels.to(device)
-                weights = weights.to(device)
 
             optimizer.zero_grad()
             outputs = model(inputs).logits
@@ -370,11 +186,7 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
     model.eval()
     for idx, batch in enumerate(noisy_dataloader):
         with torch.no_grad():
-            if stage==1:
-                inputs, labels = batch
-            else:
-                inputs, labels, weights = batch
-
+            inputs, labels = batch
             inputs = inputs.to(device)
 
             if stage==1:
@@ -390,9 +202,6 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
     # evaluate epoch
     nc4_count=0
-    true_positives = torch.zeros(num_classes)
-    false_positives = torch.zeros(num_classes)
-    false_negatives = torch.zeros(num_classes)
     model.eval()     
     for idx, (eval_inputs, eval_targets) in enumerate(eval_loader):
         with torch.no_grad():
@@ -425,19 +234,6 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
             mu_c_test += mu_c_test_batch
             test_counter += test_counter_batch
-
-            preds = torch.argmax(eval_outputs, dim=1).to(device)
-            for class_idx in range(num_classes):
-                true_positives[class_idx] += ((preds == class_idx) & (eval_targets == class_idx)).sum().item()
-                false_positives[class_idx] += ((preds == class_idx) & (eval_targets != class_idx)).sum().item()
-                false_negatives[class_idx] += ((preds != class_idx) & (eval_targets == class_idx)).sum().item()
-    
-    # Calcoliamo Precision, Recall e F1 per ogni classe
-    precision = true_positives / (true_positives + false_positives + 1e-8)  
-    recall = true_positives / (true_positives + false_negatives + 1e-8)
-    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
-    
-    f1_macro = f1_scores.mean().item()
             
     # normalize test centroids            
     for k in range(len(mu_c_test)):
@@ -445,7 +241,7 @@ def compute_epoch_info(model, dataloader, eval_loader, noisy_indices, optimizer,
 
     handle_F.remove()
     
-    return mu_G, mu_c, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), sum(noisy_top1)/len(noisy_top1), nc4_ratio, mu_c_test, f1_macro
+    return mu_G, mu_c, sum(top1)/len(top1), sum(eval_top1)/len(eval_top1), sum(noisy_top1)/len(noisy_top1), nc4_ratio, mu_c_test
 
 """Neural Collapse Properties and personalized metrics"""
 
@@ -475,11 +271,7 @@ def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader, delta_distance_
     model.eval()
     for idx, batch in enumerate(dataloader):
         with torch.no_grad():
-            if stage==1:
-                inputs, targets = batch
-            else:
-                inputs, targets, weights = batch
-
+            inputs, targets = batch
             inputs = inputs.to(device)
 
             if stage==1:
@@ -523,8 +315,6 @@ def compute_Sigma_W_and_distance(model, mu_c_tensor, dataloader, delta_distance_
 def compute_Sigma_B(mu_c, mu_G):
     Sigma_B = 0
     K = len(mu_c)
-    #for key in mu_c_dict.keys():
-        #print(mu_c_dict[key].shape)
     for i in range(K):
         # Ensure mu_G is the same shape as mu_c_dict[i] before subtraction
         mu_G_reshaped = mu_G.reshape(mu_c[i].shape)
@@ -540,8 +330,6 @@ def compute_ETF(mu_c, mu_G, feature_size):
 
     # Calcolo delle distanze relative tra centroide di classe e centroide globale
     for i in range(len(mu_c)):
-        #print(value.shape)
-        #print(mu_G.shape)
         M[i] = (mu_c[i] - mu_G) / torch.norm(mu_c[i] - mu_G, dim=-1, keepdim=True)
 
     MMT= M @ M.t()
@@ -674,14 +462,6 @@ def show_plot(info_dict, mode, version, dataset_name, stage):
                  color='green',
                  label='Train Accuracy')  
 
-    sns.lineplot(x=np.arange(1, len(info_dict['f1']) + 1),
-             y=info_dict['f1'],
-             ax=axs[0, 0],
-             marker="o",
-             linewidth=2,
-             color='blue',
-             label='F1 Score')
-
     sns.lineplot(x=np.arange(1, len(info_dict['noisy_acc']) + 1),
                  y=info_dict['noisy_acc'],
                  ax=axs[0, 0],
@@ -697,10 +477,11 @@ def show_plot(info_dict, mode, version, dataset_name, stage):
              linewidth=2,
              color='orange',
              label='Test Accuracy')
-
     axs[0, 0].set_title('Accuracy', fontsize=16, fontweight='bold')
     axs[0, 0].set_xlabel('Epochs', fontsize=14)
     axs[0, 0].set_ylabel('Accuracy', fontsize=14)
+
+    
 
     # center-top: NC1
     sns.lineplot(x=np.arange(1, len(info_dict['NC1']) + 1),
@@ -982,70 +763,57 @@ def show_noise_coherence(info_dict, mode, version, dataset_name, stage):
     # Chiudi la figura per liberare memoria
     plt.close()
 
-def show_pie_graph_detection(tensor, mode, version, dataset_name, noisy_indices, stage, dict_type='delta_distance'):
-    means = tensor.mean(dim=1).cpu().numpy()
-    # Clean
-    clean_indices = np.setdiff1d(np.arange(tensor.shape[0]), noisy_indices)
-    # Means for "clean" and "noisy"
-    clean_means = means[clean_indices]
-    noisy_means = means[noisy_indices]
-
-    # Non Detected Noise
-    positive_mean_noisy = np.sum(noisy_means > 0)
-    positive_mean_noisy_percentage = (positive_mean_noisy / len(noisy_means)) * 100
-
-    # detected noise
-    negative_mean_noisy = np.sum(noisy_means < 0)
-    negative_mean_noisy_percentage = (negative_mean_noisy / len(noisy_means)) * 100
-
-    # Clean smples detected as clean
-    positive_mean_clean = np.sum(clean_means >= 0)
-    positive_mean_clean_percentage = (positive_mean_clean / len(clean_means)) * 100
-
-    # Clean samples detected as fake
-    negative_mean_clean = np.sum(clean_means < 0)
-    negative_mean_clean_percentage = (negative_mean_clean / len(clean_means)) * 100
-
-
-    sns.set(style="whitegrid")
-    noisy_labels = ['Noisy Samples Detected \n (mean<0)', 'Noisy Samples not Detected \n (mean>0)']
-    noisy_sizes = [negative_mean_noisy_percentage,positive_mean_noisy_percentage]
-    noisy_colors = ['green', 'red']  # Rosso per media positiva, verde per media negativa
-
-    # Grafico a torta per campioni puliti (clean)
-    clean_labels = ['Clean Correctly detected \n (mean>0)', 'Clean Samples Detected as Noisy \n (mean<0)']
-    clean_sizes = [positive_mean_clean_percentage, negative_mean_clean_percentage]
-    clean_colors = ['green', 'yellow']  # Verde per media positiva, giallo per media negativa
-
-    # Creazione della griglia 1x2
-    fig, axes = plt.subplots(1, 2, figsize=(12, 10))
-
-    # Primo grafico: Noisy Samples
-    axes[0].pie(noisy_sizes, labels=noisy_labels, colors=noisy_colors, autopct='%1.1f%%', startangle=90, 
-                wedgeprops=dict(edgecolor='black'))
-    axes[0].set_title('Noisy Samples: \n Relative Distances with zero boundary', fontsize=16)
-
-    # Secondo grafico: Clean Samples
-    axes[1].pie(clean_sizes, labels=clean_labels, colors=clean_colors, autopct='%1.1f%%', startangle=90, 
-                wedgeprops=dict(edgecolor='black'))
-    axes[1].set_title('Clean Samples: \n Relative Distance with zero boundary', fontsize=16)
-
-    # Imposta il layout per evitare sovrapposizioni
-    plt.tight_layout()
-    plt.savefig(f'noise_detection_epoch_{tensor.shape[1]}_{mode}{version}_{dataset_name}_{stage}.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-
 ##################################################################################################################################################
 #define dataset, model, its version
 dataset_name='cifar10'
 mode='lenet'
 version=''
+num_classes = 10
 
-#define model and relative dataset to train and collapse
-model = cifar10_lenet
-num_classes = cifar10_classes
-feature_size =  lenet_feature_size
+# Load the dataset that contains same noisy elements and references
+noisy_dataset_path = folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noisy_dataset.pt'
+# Load early smoothed values
+early_labels_path = folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_early_labels.pth'
+# Load delta_distance_tracker.tensorize().mean()
+delta_distances_path = folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_delta_distances.pt'
+
+# Load
+noisy_dataset = torch.load(noisy_dataset_path)
+early_labels = torch.load(early_labels_path)
+delta_distances_mean = torch.load(delta_distances_path)
+
+corrupted_indices = noisy_dataset.get_corrupted_indices()
+
+smoothed_labels=NC_based_smoothing(early_labels, delta_distances_mean, noisy_dataset.get_fake_labels() )
+print(smoothed_labels[:50])
+
+# add label smoothing labels to dataset without lose reference (just ordered belongs training order)
+smoothed_labels = smoothed_labels.cpu().numpy() # new smoothed labels (N,classes)
+# Add weigths to samples for training (just ordered belongs training order)
+#delta_distances_weights = delta_distance_tracker.tensorize()  # Ordered Tensor(N, num_epochs)
+#delta_distances_weights = delta_distances_weights.mean(dim=1).cpu().numpy() # Logits Weights Tensor (N,)
+
+# new dataset modified with experimental results exloitation
+smoothed_dataset = NoiseDataset(noisy_dataset.dataset, smoothed_labels)
+
+# dataloader withuout Temporal injection
+cifar10_trainloader = DataLoader(smoothed_dataset, batch_size=256, shuffle=True, num_workers=2, drop_last=False)
+
+# color transformations:  tensorizzazione e normalizzazione
+transform = transforms.Compose(
+    [transforms.ToTensor(),
+     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+#testset
+cifar10_testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+cifar10_testloader = DataLoader(cifar10_testset, batch_size=256, num_workers=2, drop_last=True)
+
+print(f"Dimensione del dataset rumoroso: {len(noisy_dataset)}")
+print(f"Early labels shape: {early_labels.shape}")
+print(f"Delta distances mean shape: {delta_distances_mean.shape}")
+
+model = models.googlenet(pretrained=False)
+feature_size=model.fc.in_features
+model.fc = nn.Linear(feature_size, num_classes, bias=False)
 
 #flags
 resnet=False
@@ -1056,7 +824,7 @@ efficientnet=False
 mnas=False
 
 #datasets
-train_dataset = cifar10_noisy_trainset 
+train_dataset = noisy_dataset
 test_dataset = cifar10_testset 
 trainloader = cifar10_trainloader
 testloader = cifar10_testloader
@@ -1085,7 +853,8 @@ info_dict = {
         'coherence':[],
         'outliers_coherence':[],
         'clean_coherence':[],
-        'f1':[],
+        #'clean_mem':[],
+        #'fake_mem':[],
 }
 
 tracking_noise= {
@@ -1118,39 +887,19 @@ tracking_clean={
     '11':[]
 }
 
+stage=2
+early_learning=False
+delta_distance_tracker = SampleTracker()
 
-delta_distance_tracker=SampleTracker()
-
-# variables to exploit early learning coherence
-early_learning_tracker = SampleLabelTracker()
-start_eval_accuracy=0.60 # choose a value of accuracy before start to apply technique, but also zero is okay
-best_eval_accuracy=0.0
-early_learning=True
-early_labels=[]
-
-stage=1
 
 for i in range(epochs):
-
     #Evaluate NC properties at current epoch
-    mu_G_train, mu_c_train, train_acc, eval_acc, noise_acc, nc4, mu_c_test, f1_score = compute_epoch_info( model, trainloader, testloader, corrupted_indices, optimizer, criterion, num_classes, feature_size, stage, mode=mode)
-
+    mu_G_train, mu_c_train, train_acc, eval_acc, noise_acc, nc4, mu_c_test = compute_epoch_info( model, trainloader, testloader, corrupted_indices, optimizer, criterion, num_classes, feature_size, stage, mode=mode)
     #NC1 and stability metrics( f,d and delta_d are vectors of dimension N to append into a dict that store it as epoch result )
-    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker,early_learning_tracker, early_learning, stage, mode=mode)
+    Sigma_W = compute_Sigma_W_and_distance( model, mu_c_train, trainloader, delta_distance_tracker, None, False, stage, mode=mode)
     Sigma_B = compute_Sigma_B(mu_c_train, mu_G_train)
     collapse_metric = float(np.trace(Sigma_W.cpu() @ scilin.pinv(Sigma_B.cpu().numpy())) / len(mu_c_train))
     
-    # Early learning coherence exploitation by elbow in evaluation performance
-    if early_learning:
-        if eval_acc>start_eval_accuracy:
-            if (best_eval_accuracy < eval_acc):
-                best_eval_accuracy = eval_acc
-            else:
-                label_smooth_ref=early_learning_tracker.extract_epoch(i-1)
-                print('early learning references found, going to late separation phase...')
-                early_learning=False
-                early_labels= early_learning_label_smoothing(label_smooth_ref)
-
     #NC2
     if resnet:
       A = model.fc.weight
@@ -1173,25 +922,8 @@ for i in range(epochs):
     alignment= self_dual_alignment(A, mu_c_train, mu_G_train, feature_size)
 
     # Divide dataset between real and fake samples
-    clean_labels_dataset, noisy_labels_dataset, complete_noisy_labels_dataset = train_dataset.divide_samples()
-    clean_dataloader = DataLoader(clean_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
-    noisy_dataloader = DataLoader(noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
-    complete_noisy_dataloader = DataLoader(complete_noisy_labels_dataset, batch_size=128, num_workers=2, drop_last=False)
-
-    norm_factor=len(complete_noisy_labels_dataset)
-    label_coherence_score = compute_label_coherence_score(model, mu_c_train, complete_noisy_dataloader, norm_factor, mode, device)
-    label_coherence_of_nearest_centroid = compute_label_coherence_for_noisy_outliers(model, mu_c_train, complete_noisy_dataloader, mode, device )
-    clean_label_coherence = compute_label_coherence_for_clean_samples(model, mu_c_train, trainloader, mode, device)
-
-    # Track of n noisy samples 
-    features_distance_items = get_distance_n_noisy_samples(12 , model, train_dataset, mu_c_train)
-    for key, v in features_distance_items.items():
-        tracking_noise[key].append(v)
-    
-    #track n clean samples
-    features_distance_items = get_distance_n_samples(12 , model, train_dataset, mu_c_train)
-    for key, v in features_distance_items.items():
-        tracking_clean[key].append(v)
+    #clean_labels_dataset = NoisySubset(new_dataset, np.array(list(set(indices)-set(corrupted_indices))))
+    #noisy_labels_dataset = NoisySubset(new_dataset, corrupted_indices)
 
     ################################################################################
     #Store NC properties
@@ -1200,26 +932,29 @@ for i in range(epochs):
     info_dict['NC3'].append(alignment)
     info_dict['NC4'].append(nc4)
     info_dict['mu_c_train'].append(mu_c_train)
-    info_dict['coherence'].append(label_coherence_score)
-    info_dict['clean_coherence'].append(clean_label_coherence)
-    info_dict['outliers_coherence'].append(label_coherence_of_nearest_centroid)
+    #info_dict['coherence'].append(label_coherence_score)
+    #info_dict['outliers_coherence'].append(label_coherence_of_nearest_centroid)
+
 
     #Store accuracies
     info_dict['train_acc'].append(train_acc)
     info_dict['eval_acc'].append(eval_acc)
     info_dict['noisy_acc'].append(noise_acc)
-    info_dict['f1'].append(f1_score)
 
-    if (i+1) % 10 == 0:
+    if (i+1) % 5 == 0:
         show_plot(info_dict, mode, version, dataset_name, stage) 
-        #show_noise_samples(tracking_noise, mode, version, dataset_name, stage)
-        #show_clean_samples(tracking_clean, mode, version, dataset_name, stage)
-    
-        #delta_distances= delta_distance_tracker.tensorize()
+        delta_distances= delta_distance_tracker.tensorize()
+        #distances= distance_tracker.tensorize()
+        show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=corrupted_indices, stage=stage, dict_type='delta_distance')
 
-        #show_pie_graph_detection(delta_distances, mode, version, dataset_name, noisy_indices=corrupted_indices, stage=stage)
-        #show_mean_var_relevations(delta_distances, mode, version, dataset_name, noisy_indices=corrupted_indices, stage=stage, dict_type='delta_distance')
-        #show_noise_coherence(info_dict, mode, version,dataset_name, stage)
-        #del delta_distances
-    
-    print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} | coherence:{label_coherence_score:.4f}]')
+        del delta_distances
+        
+        torch.save(model.state_dict(), folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/epoch_{i+1}_{mode}{version}_{dataset_name}_weights2.pth')
+
+        with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_results2.pkl', 'wb') as f:
+            pickle.dump(info_dict, f)
+
+        with open(folder_path + f'/noise/noise10/{dataset_name}/{mode}{version}/{mode}{version}_{dataset_name}_noise_track2.pkl', 'wb') as f:
+            pickle.dump(tracking_noise, f)
+
+    print(f'[epoch:{i + 1} | train top1:{train_acc:.4f} | eval acc:{eval_acc:.4f} | NC1:{collapse_metric:.4f} | NC4:{nc4:.4f} ]')
